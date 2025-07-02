@@ -8,7 +8,7 @@
  * @copyright Copyright (c) 2025 Lucky Fischer
  * @license   https://opensource.org/licenses/MIT MIT License
  * @link      https://github.com/decMuc/PDOdb
- * @version   1.0.0
+ * @version   1.0.2
  * @inspired-by https://github.com/ThingEngineer/PHP-MySQLi-Database-Class
  */
 
@@ -1067,9 +1067,6 @@ final class PDOdb
         $this->_buildCondition('HAVING', $this->_having);
         $this->_buildOrderBy();
         $this->_buildLimit($numRows);
-
-        echo ">>> FINAL QUERY:\n" . $this->_query . "\n";
-        echo ">>> BINDINGS:\n" . json_encode($this->_getBindValues()) . "\n";
 
         if ($this->_forUpdate) {
             $this->_query .= ' FOR UPDATE';
