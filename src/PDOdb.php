@@ -3358,6 +3358,29 @@ final class PDOdb
      */
     protected function _validateTableName(string $tableName): string
     {
+        // Entferne mögliche Backticks/Quotes außen
+        $tableName = trim($tableName, "`'\"");
+
+        // Zerlege in tabellenname [und optionalen alias]
+        $parts = preg_split('/\s+/', $tableName);
+        $name  = $parts[0];
+        $alias = $parts[1] ?? null;
+
+        // Prüfe: db[.schema][.table] mit maximal 2 Punkten
+        if (!preg_match('/^[a-zA-Z0-9_]+(\.[a-zA-Z0-9_]+){0,2}$/', $name)) {
+            throw new \InvalidArgumentException("Invalid characters found in table name: '{$name}'.");
+        }
+
+        // Optional: Alias prüfen
+        if ($alias !== null && !preg_match('/^[a-zA-Z0-9_]+$/', $alias)) {
+            throw new \InvalidArgumentException("Invalid characters found in alias: '{$alias}'.");
+        }
+
+        // Sicherer Rückgabewert: ggf. wieder zusammensetzen
+        return $alias ? "{$name} {$alias}" : $name;
+    }
+    protected function _validateTableName_org(string $tableName): string
+    {
         // Entferne mögliche Backticks/Anführungszeichen am Anfang/Ende, falls diese vom Nutzer mitgegeben werden
         $tableName = trim($tableName, "`'\"");
 
