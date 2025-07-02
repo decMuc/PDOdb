@@ -582,17 +582,16 @@ final class PDOdb
         $this->_forUpdate = false;
         $this->_lockInShareMode = false;
         $this->_tableName = '';
-        $this->_lastInsertId = null;
+        // $this->_lastInsertId = null;
         $this->_updateColumns = null;
         $this->_mapKey = null;
 
-        // WICHTIG – ergänzt:
         $this->_tableAlias = null;
         $this->_stmtError = null;
         $this->_stmtErrno = null;
-        $this->totalCount = 0;
-        $this->count = 0;
-        $this->_lastQuery = '';
+        // $this->totalCount = 0;
+        // $this->count = 0;
+        // $this->_lastQuery = '';
 
         if (!$this->_transaction_in_progress) {
             $this->defConnectionName = 'default';
@@ -1036,6 +1035,9 @@ final class PDOdb
     public function get(string $tableName, int|array $numRows = null, string|array $columns = '*'): bool|array
     {
 
+        $this->count = 0;
+        $this->totalCount = 0;
+
         $tableName = $this->_validateTableName($tableName);
 
         if (preg_match('/^([^\s]+)\s+([^\s]+)$/', trim($tableName), $m)) {
@@ -1173,6 +1175,22 @@ final class PDOdb
      */
     public function insert(string $tableName, array $insertData): int
     {
+        $this->count = 0;
+        $tableName = $this->_validateTableName($tableName);
+        return $this->_buildInsert($tableName, $insertData, 'INSERT');
+    }
+
+    /**
+     * Internal helper method for insertMulti().
+     * Works identically to insert(), but does NOT reset the count.
+     * This allows insertMulti() to accumulate the total count across multiple calls.
+     *
+     * @param string $tableName The table name
+     * @param array $insertData Associative array of column => value pairs
+     * @return int Returns the last insert ID, or 1 if no auto-increment column is used
+     */
+    protected function insertMultis(string $tableName, array $insertData): int
+    {
         $tableName = $this->_validateTableName($tableName);
         return $this->_buildInsert($tableName, $insertData, 'INSERT');
     }
@@ -1188,6 +1206,7 @@ final class PDOdb
      */
     public function insertMulti(string $tableName, array $multiInsertData, array $dataKeys = null): array|false
     {
+        $this->count = 0;
         // If not already in transaction, wrap in one for safety
         $autoCommit = !$this->_transaction_in_progress;
         $ids = [];
@@ -1219,7 +1238,7 @@ final class PDOdb
                 }
             }
 
-            $id = $this->insert($tableName, $insertData);
+            $id = $this->insertMultis($tableName, $insertData);
             if (!$id) {
                 $this->_stmtError = $this->_stmtError ?? "insertMulti(): insert() schlug fehl.";
                 // 👇 Füge diese Debugzeile hier ein:
@@ -1243,6 +1262,8 @@ final class PDOdb
 
     public function insertBulk(string $tableName, array $multiRows): int
     {
+        $this->count = 0;
+
         if (empty($multiRows)) {
             return 0;
         }
@@ -1294,6 +1315,7 @@ final class PDOdb
      */
     public function replace(string $tableName, array $insertData): int
     {
+        $this->count = 0;
         $tableName = $this->_validateTableName($tableName);
         return $this->_buildInsert($tableName, $insertData, 'REPLACE');
     }
@@ -1325,6 +1347,7 @@ final class PDOdb
      */
     public function update(string $tableName, array $tableData, ?int $numRows = null): bool
     {
+        $this->count = 0;
         if ($this->isSubQuery) {
             return false;
         }
@@ -1363,6 +1386,8 @@ final class PDOdb
      */
     public function delete(string $tableName, $numRows = null): bool
     {
+        $this->count = 0;
+
         if ($this->isSubQuery) {
             throw new \Exception('Delete function cannot be used within a subquery context.');
         }
@@ -2107,6 +2132,7 @@ final class PDOdb
      */
     protected function _buildInsert(string $tableName, array $insertData, string $operation): int|bool
     {
+
         if ($this->isSubQuery) {
             throw new \Exception("Cannot perform insert inside a subquery context.");
         }

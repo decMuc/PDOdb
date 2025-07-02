@@ -2,7 +2,7 @@
 
 require_once __DIR__ . '/../vendor/autoload.php';
 
-use decoMuc\PDOdb\PDOdb;
+use decMuc\PDOdb\PDOdb;
 
 // Auto linebreak detection (CLI vs. browser)
 $isCli = (php_sapi_name() === 'cli');
@@ -13,7 +13,7 @@ $db = new PDOdb([
     'host' => '127.0.0.1',
     'username' => 'root',
     'password' => '',
-    'database' => 'testdb',
+    'db' => 'testdb',
     'charset' => 'utf8mb4',
 ]);
 
