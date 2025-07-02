@@ -15,7 +15,7 @@ While the original MysqliDb class was a great utility for many years, it is no l
 - ✅ **Fully compatible with ThingEngineer’s MysqliDb**
   Same method names, same behavior – just safer and more modern under the hood.
 
-- 🔐 **Built on native PDO**
+- 🔐 **Built on native PDO** 
   Replaces `mysqli_*` with secure and flexible PDO, using real prepared statements.
 
 - 🧱 **Modern PHP: Clean, typed, and robust**
