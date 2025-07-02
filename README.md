@@ -111,7 +111,8 @@ use decMuc\PDOdb\PDOdb;
 ⚠️ Be sure to include all required class files if you separate them into multiple files/folders.
 
 
-⚠️ WARNING
+**⚠️ WARNING**
+
 PDOdb is designed to mimic the behavior of ThingEngineer's MysqliDb for compatibility purposes – but just like the original class, it is not bulletproof if misused.
 
 Here are a few important things to keep in mind:
