@@ -8,7 +8,7 @@
  * @copyright Copyright (c) 2025 Lucky Fischer
  * @license   https://opensource.org/licenses/MIT MIT License
  * @link      https://github.com/decMuc/PDOdb
- * @version   1.0.2
+ * @version   1.0.3
  * @inspired-by https://github.com/ThingEngineer/PHP-MySQLi-Database-Class
  */
 
