@@ -12,7 +12,7 @@
   ],
   "autoload": {
     "psr-4": {
-      "decoMuc\\PDOdb\\": "src/"
+      "decMuc\\PDOdb\\": "src/"
     }
   },
   "require": {
