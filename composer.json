@@ -1,0 +1,23 @@
+{
+  "name": "decmuc/pdodb",
+  "description": "Modern, secure and fully compatible PDO-based replacement for ThingEngineer’s PHP-MySQLi-Database-Class.",
+  "keywords": ["pdo", "database", "orm", "mysqli", "thingengineer", "wrapper"],
+  "type": "library",
+  "license": "MIT",
+  "authors": [
+    {
+      "name": "decmuc",
+      "homepage": "https://github.com/decmuc"
+    }
+  ],
+  "autoload": {
+    "psr-4": {
+      "decoMuc\\PDOdb\\": "src/"
+    }
+  },
+  "require": {
+    "php": ">=8.1"
+  },
+  "minimum-stability": "dev",
+  "prefer-stable": true
+}

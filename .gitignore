@@ -1,0 +1,27 @@
+# Composer
+/vendor/
+composer.lock
+
+# PHPStorm / VSCode / IDEs
+.idea/
+.vscode/
+*.iml
+
+# Logs / Cache
+*.log
+cache/
+logs/
+tmp/
+
+# OS-Spezifisches
+.DS_Store
+Thumbs.db
+
+# PHPUnit (für später)
+.phpunit.result.cache
+coverage/
+
+# Tests (optional, wenn später generiert)
+/tests/_output/
+/tests/_cache/
+/tests/*.sqlite
