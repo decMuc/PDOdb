@@ -1426,9 +1426,9 @@ final class PDOdb
             $op = strtoupper(trim($operator));
 
             if ($op === '=' || $op === 'IS') {
-                $this->_where[] = [$cond, "{$column} IS NULL"];
+                $this->_where[] = [$cond, $column, 'IS', null];
             } elseif ($op === '!=' || $op === 'IS NOT') {
-                $this->_where[] = [$cond, "{$column} IS NOT NULL"];
+                $this->_where[] = [$cond, $column, 'IS NOT', null];
             } else {
                 throw new \InvalidArgumentException("Unsupported NULL comparison operator: {$operator}");
             }
@@ -1473,9 +1473,9 @@ final class PDOdb
             $op = strtoupper(trim($operator));
 
             if ($op === '=' || $op === 'IS') {
-                $this->_where[] = ['OR', "{$column} IS NULL"];
+                $this->_where[] = ["OR", $column, 'IS', null];
             } elseif ($op === '!=' || $op === 'IS NOT') {
-                $this->_where[] = ['OR', "{$column} IS NOT NULL"];
+                $this->_where[] = ["OR", $column, 'IS NOT', null];
             } else {
                 throw new \InvalidArgumentException("Unsupported NULL comparison operator: {$operator}");
             }
