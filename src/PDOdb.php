@@ -1410,17 +1410,36 @@ final class PDOdb
      */
     public function where(string $column, mixed $value = null, string $operator = '=', string $cond = 'AND')
     {
-        if ($value === null && $operator !== null) {
+        // First condition gets no logical connector
+        if (count($this->_where) === 0) {
+            $cond = '';
+        }
+
+        // If only two parameters passed, treat $operator as value and default to '='
+        if ($value === null && $operator !== null && !in_array(strtoupper($operator), ['IS', 'IS NOT'])) {
             $value = $operator;
             $operator = '=';
         }
 
-        if (count($this->_where) === 0) {
-            $cond = ''; // erste Bedingung bekommt keinen Verknüpfer
+        // Special handling for NULL comparisons
+        if (is_null($value)) {
+            $op = strtoupper(trim($operator));
+
+            if ($op === '=' || $op === 'IS') {
+                $this->_where[] = [$cond, "{$column} IS NULL"];
+            } elseif ($op === '!=' || $op === 'IS NOT') {
+                $this->_where[] = [$cond, "{$column} IS NOT NULL"];
+            } else {
+                throw new \InvalidArgumentException("Unsupported NULL comparison operator: {$operator}");
+            }
+
+            return $this->_instance ?? $this;
         }
 
+        // Regular condition
         $this->_where[] = [$cond, $column, $operator, $value];
-        return $this;
+
+        return $this->_instance ?? $this;
     }
 
     /**
@@ -1443,11 +1462,28 @@ final class PDOdb
      */
     public function orWhere(string $column, mixed $value = null, string $operator = '='): static
     {
-        if ($value === null && $operator !== null) {
+        // If only two parameters passed, treat $operator as value and default to '='
+        if ($value === null && $operator !== null && !in_array(strtoupper($operator), ['IS', 'IS NOT'])) {
             $value = $operator;
             $operator = '=';
         }
 
+        // Special handling for NULL comparisons
+        if (is_null($value)) {
+            $op = strtoupper(trim($operator));
+
+            if ($op === '=' || $op === 'IS') {
+                $this->_where[] = ['OR', "{$column} IS NULL"];
+            } elseif ($op === '!=' || $op === 'IS NOT') {
+                $this->_where[] = ['OR', "{$column} IS NOT NULL"];
+            } else {
+                throw new \InvalidArgumentException("Unsupported NULL comparison operator: {$operator}");
+            }
+
+            return $this->_instance ?? $this;
+        }
+
+        // Regular OR condition
         return $this->where($column, $value, $operator, 'OR');
     }
 
