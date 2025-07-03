@@ -8,7 +8,7 @@
  * @copyright Copyright (c) 2025 Lucky Fischer
  * @license   https://opensource.org/licenses/MIT MIT License
  * @link      https://github.com/decMuc/PDOdb
- * @version   1.1.1
+ * @version   1.2.0
  * @inspired-by https://github.com/ThingEngineer/PHP-MySQLi-Database-Class
  */
 
@@ -2579,6 +2579,25 @@ final class PDOdb
         return $this;
     }
 
+    /**
+     * Validates a SQL expression to ensure it is safe and syntactically correct.
+     *
+     * This method is used to prevent SQL injection and enforce strict safety rules
+     * when allowing user-defined expressions in GROUP BY or ORDER BY clauses.
+     *
+     * Supported formats:
+     * - Simple column names (e.g. `status`, `users.name`)
+     * - Quoted string or numeric literals
+     * - Allowed SQL functions with validated arguments (e.g. ROUND(price, 2))
+     * - Safe CASE ... WHEN ... THEN ... ELSE ... END expressions
+     * - Safe binary expressions (e.g. total > 100)
+     *
+     * The method supports recursive parsing of nested functions and expressions.
+     * Any use of dangerous keywords or disallowed constructs will result in an exception.
+     *
+     * @param string $expr The SQL expression to validate.
+     * @throws \InvalidArgumentException If the expression is unsafe or malformed.
+     */
     protected function validateSqlExpression(string $expr): void
     {
         $expr = trim($expr);
@@ -2594,8 +2613,12 @@ final class PDOdb
             return;
         }
 
-        // CASE ... WHEN ... THEN ... END
-        if (preg_match('/^CASE\s+WHEN\s.+\s+THEN\s.+(\s+WHEN\s.+\s+THEN\s.+)*(\s+ELSE\s.+)?\s+END$/is', $expr)) {
+        if (stripos($expr, 'CASE') === 0) {
+            // Versuche einzelne Teile zu extrahieren
+            $parts = $this->extractCaseParts($expr);
+            foreach ($parts as $partExpr) {
+                $this->validateSqlExpression($partExpr); // rekursiv prüfen
+            }
             return;
         }
 
@@ -2614,10 +2637,63 @@ final class PDOdb
 
             return;
         }
-
+        if (preg_match('/^[\w\.\'"]+\s*(=|<>|!=|<|>|<=|>=)\s*[\w\.\'"]+$/', $expr)) {
+            return;
+        }
         throw new \InvalidArgumentException("Invalid SQL expression: $expr");
     }
 
+    /**
+     * Extracts individual expressions from a SQL CASE statement for further validation.
+     *
+     * This helper method is used to safely parse and dissect complex CASE expressions into
+     * smaller parts such as conditions, THEN values, and the optional ELSE value.
+     *
+     * Example:
+     *   CASE WHEN a = 1 THEN 'x' WHEN b = 2 THEN 'y' ELSE 'z' END
+     *   → ['a = 1', "'x'", 'b = 2', "'y'", "'z'"]
+     *
+     * The returned array can then be passed recursively to the SQL expression validator.
+     *
+     * @param string $expr The full CASE expression to parse.
+     * @return array Array of extracted expression parts.
+     * @throws \InvalidArgumentException If the CASE expression is malformed.
+     */
+    protected function extractCaseParts(string $expr): array
+    {
+        $expr = preg_replace('/\s+/', ' ', trim($expr));
+        $result = [];
+
+        if (!preg_match_all('/WHEN (.+?) THEN (.+?)(?= WHEN| ELSE| END)/i', $expr, $matches, PREG_SET_ORDER)) {
+            throw new \InvalidArgumentException("Malformed CASE expression: $expr");
+        }
+
+        foreach ($matches as $m) {
+            $result[] = $m[1]; // condition
+            $result[] = $m[2]; // then-value
+        }
+
+        if (preg_match('/ELSE (.+?) END$/i', $expr, $elseMatch)) {
+            $result[] = $elseMatch[1];
+        }
+
+        return $result;
+    }
+
+    /**
+     * Performs a basic security check on an SQL expression to detect dangerous keywords or patterns.
+     *
+     * This method scans the expression for forbidden SQL constructs such as:
+     * - Statement terminators (`;`)
+     * - Comment indicators (`--`, `#`, `/*`)
+     * - Dangerous SQL keywords (`DROP`, `UNION`, `SLEEP`, `LOAD_FILE`, etc.)
+     *
+     * If any pattern matches, an InvalidArgumentException is thrown immediately.
+     * This method is designed to be a first-level defense against SQL injection.
+     *
+     * @param string $expr The raw SQL expression to validate.
+     * @throws \InvalidArgumentException If a forbidden keyword or pattern is found.
+     */
     protected function sanitizeSqlExpr(string $expr): void
     {
         $forbidden = [
@@ -2632,6 +2708,17 @@ final class PDOdb
         }
     }
 
+    /**
+     * Returns a whitelist of allowed SQL functions for use in expressions.
+     *
+     * This list is used to validate expressions passed to methods like groupBy() and orderBy(),
+     * ensuring only safe, known SQL functions are allowed. Prevents abuse of dangerous or
+     * unsupported SQL functions (e.g., SLEEP, LOAD_FILE, etc.).
+     *
+     * The function names are matched case-insensitively during validation.
+     *
+     * @return array List of allowed SQL function names (in uppercase).
+     */
     protected function getAllowedFunctions(): array
     {
         return [
@@ -2643,6 +2730,23 @@ final class PDOdb
         ];
     }
 
+    /**
+     * Splits a SQL function argument list into individual arguments.
+     *
+     * This method is used to safely parse argument strings from SQL function calls
+     * (e.g., "CONCAT(a, 'b,c', IF(x, y, z))") by considering nesting and quoted strings.
+     * It correctly handles:
+     * - Quoted strings (single or double quotes)
+     * - Nested parentheses (e.g., nested function calls)
+     * - Commas inside quotes or nested calls (which should not split)
+     *
+     * Example:
+     *   Input: "a, 'b,c', IF(x, y, z)"
+     *   Output: ["a", "'b,c'", "IF(x, y, z)"]
+     *
+     * @param string $args Raw function argument string.
+     * @return array List of individual argument strings.
+     */
     protected function splitFunctionArgs(string $args): array
     {
         $result = [];
@@ -2684,6 +2788,19 @@ final class PDOdb
         return $result;
     }
 
+    /**
+     * Determines whether a given string is a quoted SQL string literal.
+     *
+     * Accepts both single-quoted ('example') and double-quoted ("example") formats.
+     * This is primarily used during SQL expression validation to allow
+     * static string values in GROUP BY or ORDER BY clauses.
+     *
+     * Note: Escaped quotes or complex nested quotes are not handled here –
+     * this method is intentionally strict for security reasons.
+     *
+     * @param string $arg The string to check.
+     * @return bool True if the argument is a simple quoted string, false otherwise.
+     */
     protected function isQuotedString(string $arg): bool
     {
         return preg_match("/^'[^']*'$/", $arg) || preg_match('/^"[^"]*"$/', $arg);
