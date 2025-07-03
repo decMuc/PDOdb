@@ -8,7 +8,7 @@
  * @copyright Copyright (c) 2025 Lucky Fischer
  * @license   https://opensource.org/licenses/MIT MIT License
  * @link      https://github.com/decMuc/PDOdb
- * @version   1.1.0
+ * @version   1.1.1
  * @inspired-by https://github.com/ThingEngineer/PHP-MySQLi-Database-Class
  */
 
@@ -418,17 +418,14 @@ final class PDOdb
     }
 
     /**
-     * Sets the default connection profile to be used for all upcoming operations.
+     * Switches the active connection to another registered connection profile.
      *
-     * The given name must have been previously registered via addConnection().
-     * This does not trigger an immediate connection attempt.
+     * This allows executing queries on different configured databases by name.
      *
-     * @param string $name Name of the connection profile (as passed to addConnection)
-     * @return static
-     * @throws \InvalidArgumentException If the named connection profile is not registered
+     * @param string $name The name of the connection profile to use
+     * @return static Fluent self for chaining
+     * @throws \InvalidArgumentException If the connection profile does not exist
      */
-
-    /* need a clone to handle slave connections */
     public function connection(string $name): static
     {
         if (!isset($this->connectionsSettings[$name])) {
@@ -442,6 +439,7 @@ final class PDOdb
 
         return $clone;
     }
+
     /**
      * Registers a named database connection configuration without connecting immediately.
      *
@@ -732,18 +730,18 @@ final class PDOdb
     }
 
     /**
-     * Executes a raw SQL query with optional parameter binding.
-     * - SELECT: returns result rows (array/object/json, je nach Einstellung)
-     * - INSERT: returns last insert id
-     * - UPDATE/DELETE: returns affected row count
-     * - Always sets $this->count, $this->_lastQuery, $this->_stmtError, etc.
+     * Executes a raw SQL query with optional bindings.
      *
-     * @param string $query The SQL query (may contain ? or :name placeholders).
-     * @param array|null $bindParams Parameters to bind (positional or named).
-     * @return mixed Query result (array, int, etc.) depending on statement type.
-     * @throws \PDOException on error.
+     * Automatically adds the configured table prefix. Returns results based on query type:
+     * - SELECT/SHOW/EXPLAIN: array of rows (associative/object based on builder)
+     * - INSERT: last insert ID or affected rows
+     * - UPDATE/DELETE/REPLACE: affected row count
+     *
+     * @param string     $query       The SQL query to execute
+     * @param array|null $bindParams  Optional array of parameters to bind
+     * @return mixed Result depends on query type or false on failure
      */
-    public function rawQuery(string $query, array $bindParams = null): mixed
+    public function rawQuery(string $query, ?array $bindParams = null): mixed
     {
         $query = $this->rawAddPrefix($query);
         $this->_query = $query;
@@ -753,7 +751,7 @@ final class PDOdb
         try {
             $stmt = $pdo->prepare($query);
 
-            if (is_array($bindParams) && !empty($bindParams)) {
+            if (!empty($bindParams)) {
                 foreach ($bindParams as $key => $value) {
                     $paramKey = is_int($key) ? $key + 1 : $key;
                     $stmt->bindValue($paramKey, $value);
@@ -770,9 +768,9 @@ final class PDOdb
 
             return match ($type) {
                 'SELECT', 'SHOW', 'DESCRIBE', 'EXPLAIN' => $this->mapResultByKey($stmt->fetchAll($this->getPdoFetchMode())),
-                'INSERT'  => $pdo->lastInsertId() ?: $this->count,
-                'UPDATE', 'DELETE', 'REPLACE' => $this->count,
-                default   => $this->mapResultByKey($stmt->fetchAll($this->getPdoFetchMode())),
+                'INSERT'                                => $pdo->lastInsertId() ?: $this->count,
+                'UPDATE', 'DELETE', 'REPLACE'           => $this->count,
+                default                                 => $this->mapResultByKey($stmt->fetchAll($this->getPdoFetchMode())),
             };
         } catch (\PDOException $e) {
             return $this->handleException($e, 'rawQuery');
@@ -780,6 +778,7 @@ final class PDOdb
             $this->reset();
         }
     }
+
 
     /**
      * Executes a raw SQL query and returns only the first result row.
@@ -791,19 +790,15 @@ final class PDOdb
      * @return array|null Returns the first result row as array, or null if no row found.
      * @throws \PDOException on error.
      */
-    public function rawQueryOne(string $query, array $bindParams = null): ?array
+    public function rawQueryOne(string $query, array $bindParams = null): array|false
     {
         $res = $this->rawQuery($query, $bindParams);
 
-        if ($res === false) {
-            return null;
+        if ($res === false || !is_array($res) || !isset($res[0]) || !is_array($res[0])) {
+            return false;
         }
 
-        if (is_array($res) && isset($res[0]) && is_array($res[0])) {
-            return $res[0];
-        }
-
-        return null;
+        return $res[0];
     }
 
     /**
@@ -812,36 +807,30 @@ final class PDOdb
      * - Otherwise, returns an array of values from the first column of each row.
      * Similar to getValue().
      *
-     * @param string $query      SQL query to execute (can use ? or named placeholders).
+     * @param string $query       SQL query to execute (can use ? or named placeholders).
      * @param array|null $bindParams Parameters to bind (positional or named).
      * @return mixed Single value (if LIMIT 1) or array of values (otherwise), or null if no result.
      * @throws \PDOException on error.
      */
-    public function rawQueryValue(string $query, array $bindParams = null): mixed
+    public function rawQueryValue(string $query, ?array $bindParams = null): mixed
     {
         $res = $this->rawQuery($query, $bindParams);
 
-        // No result or invalid structure
         if (!$res || !is_array($res) || !isset($res[0]) || !is_array($res[0])) {
             return null;
         }
 
-        // Determine first column key
         $firstKey = array_key_first($res[0]);
         if ($firstKey === null) {
             return null;
         }
 
-        // Normalize query string for LIMIT detection
-        $normalized = preg_replace('/\s+/', ' ', strtolower($query));
-        $isLimitOne = preg_match('/limit\s+1(\s*(--.*)?)?;?$/i', $normalized);
+        $isLimitOne = preg_match('/limit\s+1(\s*(--.*)?)?;?$/i', $query);
 
-        // If LIMIT 1 is present, return single value
         if ($isLimitOne) {
             return $res[0][$firstKey];
         }
 
-        // Otherwise return array of first-column values
         $values = [];
         foreach ($res as $row) {
             if (isset($row[$firstKey])) {
@@ -1219,20 +1208,19 @@ final class PDOdb
 
         foreach ($multiInsertData as $insertData) {
             if ($dataKeys !== null) {
-                // Nur wenn $insertData numerisch ist (z. B. [val1, val2])
+
                 if (array_values($insertData) === $insertData) {
                     $insertData = array_combine($dataKeys, $insertData);
                     if ($insertData === false) {
-                        $this->_stmtError = "Fehler bei array_combine(): Key-Count und Value-Count stimmen nicht überein.";
+                        $this->_stmtError = "Error in array_combine(): number of keys and values do not match.";
                         if ($autoCommit) {
                             $this->rollback();
                         }
                         return false;
                     }
                 }
-                // Wenn assoziativ + dataKeys angegeben → Entwicklerfehler
                 else {
-                    $this->_stmtError = "insertMulti(): dataKeys angegeben, aber insertData ist bereits assoziativ.";
+                    $this->_stmtError = "insertMulti(): dataKeys provided but insertData is already associative.";
                     if ($autoCommit) {
                         $this->rollback();
                     }
@@ -1242,8 +1230,8 @@ final class PDOdb
 
             $id = $this->insertMultis($tableName, $insertData);
             if (!$id) {
-                $this->_stmtError = $this->_stmtError ?? "insertMulti(): insert() schlug fehl.";
-                // 👇 Füge diese Debugzeile hier ein:
+                $this->_stmtError = $this->_stmtError ?? "insertMulti(): insert() failed.";
+
                 $this->_stmtError .= " | " . $this->getLastError();
                 if ($autoCommit) {
                     $this->rollback();
@@ -1262,6 +1250,14 @@ final class PDOdb
     }
 
 
+    /**
+     * Performs a bulk insert with multiple rows in a single query.
+     *
+     * @param string $tableName Name of the table.
+     * @param array $multiRows  Array of associative arrays, each representing a row.
+     * @return int Number of rows inserted.
+     * @throws \PDOException on failure.
+     */
     public function insertBulk(string $tableName, array $multiRows): int
     {
         $this->count = 0;
@@ -1305,6 +1301,7 @@ final class PDOdb
             $this->reset();
         }
     }
+
     /**
      * Replaces a row in the given table. Works like insert but uses SQL REPLACE.
      * If a row with the same primary or unique key exists, it will be deleted and replaced.
@@ -1324,12 +1321,12 @@ final class PDOdb
 
     /**
      * Checks if at least one record exists in the table that satisfies the previously set WHERE conditions.
-     * Die WHERE-Bedingungen müssen vor dem Aufruf dieser Methode mit `where()` gesetzt worden sein.
+     * The WHERE conditions must be set before calling this method using `where()`.
      *
      * @param string $tableName The name of the database table to check.
      *
-     * @return bool True if at least one record exists, false otherwise.
-     * @throws \Exception Wenn ein Fehler bei der Abfrage auftritt.
+     * @return bool True if at least one matching record exists, false otherwise.
+     * @throws \Exception If an error occurs during the query.
      */
     public function has(string $tableName): bool
     {
@@ -1386,7 +1383,7 @@ final class PDOdb
      * @return bool True on success, false on failure.
      * @throws \Exception When used inside a subquery context.
      */
-    public function delete(string $tableName, $numRows = null): bool
+    public function delete(string $tableName, int|array|null $numRows = null): bool
     {
         $this->count = 0;
 
@@ -1420,11 +1417,6 @@ final class PDOdb
         } finally {
             $this->reset();
         }
-    }
-
-    public function testReset(): void
-    {
-        $this->reset();
     }
 
     /**
@@ -1506,6 +1498,7 @@ final class PDOdb
         return substr_count($sql, '?') === count($bindings)
             && !preg_match('/(;|--|\bUNION\b|\bSELECT\b|\bSLEEP\b|\bBENCHMARK\b|\bDROP\b|\bLOAD_FILE\b|\bOUTFILE\b)/i', $sql);
     }
+
     /**
      * Adds a WHERE condition to the query builder.
      *
@@ -1520,7 +1513,7 @@ final class PDOdb
      * @return static
      * @throws \InvalidArgumentException
      */
-    protected function secureWhere(string $column, mixed $value = null, string $operator = '=', string $cond = 'AND')
+    protected function secureWhere(string $column, mixed $value = null, string $operator = '=', string $cond = 'AND'):static
     {
         if (count($this->_where) === 0) {
             $cond = '';
@@ -1572,7 +1565,7 @@ final class PDOdb
      * @param string $operator Comparison operator (default '=')
      * @return static
      */
-    public function where(string $column, mixed $value = null, string $operator = '=')
+    public function where(string $column, mixed $value = null, string $operator = '='):static
     {
         return $this->secureWhere($column, $value, $operator, 'AND');
     }
@@ -1585,21 +1578,25 @@ final class PDOdb
      * @param string $operator Comparison operator (default '=')
      * @return static
      */
-    public function orWhere(string $column, mixed $value = null, string $operator = '=')
+    public function orWhere(string $column, mixed $value = null, string $operator = '='):static
     {
         return $this->secureWhere($column, $value, $operator, 'OR');
     }
 
-    // New type-specific WHERE methods for stricter validation
+    // New strongly typed WHERE methods for enhanced input validation
     /**
      * Adds an AND WHERE condition expecting an integer value.
      *
-     * @param string $column
-     * @param mixed  $value
-     * @param string $operator
-     * @return static
+     * Validates that the given value is a pure integer or a string representing an integer,
+     * otherwise throws an InvalidArgumentException.
+     *
+     * @param string $column   Column name to filter on.
+     * @param mixed  $value    The value to compare; must be integer or numeric string.
+     * @param string $operator Comparison operator (default '=').
+     * @return static          Fluent interface for chaining.
+     * @throws \InvalidArgumentException If the value is not a valid integer.
      */
-    public function whereInt(string $column, mixed $value, string $operator = '=')
+    public function whereInt(string $column, mixed $value, string $operator = '='):static
     {
         // Cast attempt
         $tmp = (int)$value;
@@ -1613,10 +1610,18 @@ final class PDOdb
     }
 
     /**
-     * Adds a secure OR-based integer WHERE condition.
-     * Only allows clean integers. Rejects dangerous strings like '1); DROP ...'.
+     * Adds an OR WHERE condition expecting a clean integer value.
+     *
+     * Validates that the value is a pure integer or numeric string,
+     * rejects malformed or dangerous inputs (e.g. '1); DROP ...').
+     *
+     * @param string $column   Column name to filter on.
+     * @param mixed  $value    Value to compare; must be an integer or integer string.
+     * @param string $operator Comparison operator (default '=').
+     * @return static          Fluent interface for chaining.
+     * @throws \InvalidArgumentException If the value is not a valid integer.
      */
-    public function orWhereInt(string $column, mixed $value, string $operator = '=')
+    public function orWhereInt(string $column, mixed $value, string $operator = '='):static
     {
         // Cast attempt
         $tmp = (int)$value;
@@ -1646,9 +1651,11 @@ final class PDOdb
      *
      * @throws \InvalidArgumentException
      */
-    public function whereFloat(string $column, mixed $value, string $operator = '=')
+    public function whereFloat(string $column, mixed $value, string $operator = '='):static
     {
-        if (!is_float($value) && !is_int($value) && !preg_match('/^-?\d+(\.\d+)?$/', (string)$value)) {
+        $tmp = (float)$value;
+
+        if ((string)$tmp !== (string)$value && !is_float($value) && !is_int($value)) {
             throw new \InvalidArgumentException("Invalid float value for column '{$column}'.");
         }
 
@@ -1659,42 +1666,49 @@ final class PDOdb
      * Adds an OR WHERE condition with strict float validation.
      *
      * Ensures the value is a valid float, integer, or numeric string.
-     * If not, an InvalidArgumentException is thrown.
+     * Throws InvalidArgumentException if invalid.
      *
-     * Example: $db->orWhereFloat('amount', '120.50');
+     * Example:
+     * ```php
+     * $db->orWhereFloat('amount', '120.50');
+     * ```
      *
      * @param string $column   The column name to compare.
-     * @param mixed  $value    The value to compare. Must be float-compatible.
+     * @param mixed  $value    The value to compare; must be float-compatible.
      * @param string $operator Optional comparison operator (default '=').
      *
-     * @return static
-     *
+     * @return static          Fluent interface for chaining.
      * @throws \InvalidArgumentException
      */
-    public function orWhereFloat(string $column, mixed $value, string $operator = '=')
+    public function orWhereFloat(string $column, mixed $value, string $operator = '='):static
     {
-        if (!is_float($value) && !is_int($value) && !preg_match('/^-?\d+(\.\d+)?$/', (string)$value)) {
+        $tmp = (float)$value;
+
+        if ((string)$tmp !== (string)$value && !is_float($value) && !is_int($value)) {
             throw new \InvalidArgumentException("Invalid float value for column '{$column}'.");
         }
 
-        return $this->secureWhere($column, (float)$value, $operator, 'OR');
+        return $this->secureWhere($column, $tmp, $operator, 'OR');
     }
 
     /**
-     * Add a strict boolean condition to the WHERE clause using AND logic.
+     * Adds a strict boolean condition to the WHERE clause using AND logic.
      *
-     * Only accepts true, false, 1 or 0. All other values will throw an exception.
-     * Internally casts the value to 1 or 0 and uses a prepared statement.
+     * Only accepts the values true, false, 1, or 0 (strict comparison).
+     * Throws an InvalidArgumentException for any other value.
+     * Internally converts the value to 1 (true) or 0 (false) for the query.
      *
      * Example:
-     *   $db->whereBool('active', true);
+     * ```php
+     * $db->whereBool('active', true);
+     * ```
      *
      * @param string $column   The column name to filter.
-     * @param mixed  $value    Must be true, false, 1 or 0 (strict check).
-     * @param string $operator Optional SQL operator (= or !=). Default is '='.
+     * @param mixed  $value    Must be one of: true, false, 1, or 0 (strict).
+     * @param string $operator Optional SQL operator (default '=').
      *
-     * @return static
-     * @throws \InvalidArgumentException If the value is not strictly boolean.
+     * @return static          Fluent interface for chaining.
+     * @throws \InvalidArgumentException If the value is invalid.
      */
     public function whereBool(string $column, mixed $value, string $operator = '='): static
     {
@@ -1704,21 +1718,25 @@ final class PDOdb
 
         return $this->secureWhere($column, (bool)$value ? 1 : 0, $operator, 'AND');
     }
+
     /**
-     * Add a strict boolean condition to the WHERE clause using OR logic.
+     * Adds a strict boolean condition to the WHERE clause using OR logic.
      *
-     * Only accepts true, false, 1 or 0. All other values will throw an exception.
-     * Internally casts the value to 1 or 0 and uses a prepared statement.
+     * Only accepts the values true, false, 1, or 0 (strict comparison).
+     * Throws an InvalidArgumentException for any other value.
+     * Internally converts the value to 1 (true) or 0 (false) for the query.
      *
      * Example:
-     *   $db->orWhereBool('active', false);
+     * ```php
+     * $db->orWhereBool('active', false);
+     * ```
      *
      * @param string $column   The column name to filter.
-     * @param mixed  $value    Must be true, false, 1 or 0 (strict check).
-     * @param string $operator Optional SQL operator (= or !=). Default is '='.
+     * @param mixed  $value    Must be one of: true, false, 1, or 0 (strict).
+     * @param string $operator Optional SQL operator (default '=').
      *
-     * @return static
-     * @throws \InvalidArgumentException If the value is not strictly boolean.
+     * @return static          Fluent interface for chaining.
+     * @throws \InvalidArgumentException If the value is invalid.
      */
     public function orWhereBool(string $column, mixed $value, string $operator = '='): static
     {
@@ -1733,19 +1751,21 @@ final class PDOdb
      * Adds a WHERE condition with safe string handling.
      *
      * Ensures the value is a scalar and safely castable to string.
-     * Accepts any length string and delegates binding to PDO.
+     * Accepts strings of any length and delegates binding to PDO.
      *
-     * Example: $db->whereString('username', 'admin');
+     * Example:
+     * ```php
+     * $db->whereString('username', 'admin');
+     * ```
      *
      * @param string $column   The column name to compare.
-     * @param mixed  $value    The value to compare. Will be cast to string.
+     * @param mixed  $value    The value to compare; will be cast to string.
      * @param string $operator Optional comparison operator (default '=').
      *
-     * @return static
-     *
-     * @throws \InvalidArgumentException
+     * @return static          Fluent interface for chaining.
+     * @throws \InvalidArgumentException If a non-scalar value is given.
      */
-    public function whereString(string $column, mixed $value, string $operator = '=')
+    public function whereString(string $column, mixed $value, string $operator = '='):static
     {
         if (!is_scalar($value)) {
             throw new \InvalidArgumentException("Non-scalar value given for column '{$column}'.");
@@ -1758,19 +1778,21 @@ final class PDOdb
      * Adds an OR WHERE condition with safe string handling.
      *
      * Ensures the value is a scalar and safely castable to string.
-     * Accepts any length string and delegates binding to PDO.
+     * Accepts strings of any length and delegates binding to PDO.
      *
-     * Example: $db->orWhereString('description', 'example text');
+     * Example:
+     * ```php
+     * $db->orWhereString('description', 'example text');
+     * ```
      *
      * @param string $column   The column name to compare.
-     * @param mixed  $value    The value to compare. Will be cast to string.
+     * @param mixed  $value    The value to compare; will be cast to string.
      * @param string $operator Optional comparison operator (default '=').
      *
-     * @return static
-     *
-     * @throws \InvalidArgumentException
+     * @return static          Fluent interface for chaining.
+     * @throws \InvalidArgumentException If a non-scalar value is given.
      */
-    public function orWhereString(string $column, mixed $value, string $operator = '=')
+    public function orWhereString(string $column, mixed $value, string $operator = '='):static
     {
         if (!is_scalar($value)) {
             throw new \InvalidArgumentException("Non-scalar value given for column '{$column}'.");
@@ -1780,18 +1802,19 @@ final class PDOdb
     }
 
     /**
-     * Add a WHERE condition for date or datetime columns.
+     * Adds a WHERE condition for date or datetime columns.
+     *
      * Accepts strings in 'Y-m-d' or 'Y-m-d H:i:s' format,
      * or a valid 10-digit UNIX timestamp (converted internally).
      *
-     * @param string $column
-     * @param mixed $value  A date string or UNIX timestamp
-     * @param string $operator
-     * @return static
+     * @param string $column   The column name to compare.
+     * @param mixed  $value    Date string or UNIX timestamp.
+     * @param string $operator Comparison operator (default '=').
      *
-     * @throws \InvalidArgumentException if the value is not a valid date or timestamp
+     * @return static          Fluent interface for chaining.
+     * @throws \InvalidArgumentException If the value is not a valid date, datetime, or timestamp.
      */
-    public function whereDate(string $column, mixed $value, string $operator = '=')
+    public function whereDate(string $column, mixed $value, string $operator = '='):static
     {
         if (!is_scalar($value)) {
             throw new \InvalidArgumentException("Non-scalar date value for column '{$column}'.");
@@ -1799,12 +1822,12 @@ final class PDOdb
 
         $str = (string)$value;
 
-        // Allow 'Y-m-d' or 'Y-m-d H:i:s'
+        // Accept 'Y-m-d' or 'Y-m-d H:i:s'
         if (
             \DateTime::createFromFormat('Y-m-d', $str) === false &&
             \DateTime::createFromFormat('Y-m-d H:i:s', $str) === false
         ) {
-            // Allow 10-digit UNIX timestamps
+            // Accept 10-digit UNIX timestamps only
             if (!preg_match('/^\d{10}$/', $str)) {
                 throw new \InvalidArgumentException("Invalid date or datetime format for column '{$column}': '{$str}'");
             }
@@ -1815,18 +1838,20 @@ final class PDOdb
 
         return $this->secureWhere($column, $str, $operator, 'AND');
     }
+
     /**
-     * Add an OR WHERE condition for date or datetime columns.
-     * Same validation as whereDate().
+     * Adds an OR WHERE condition for date or datetime columns.
      *
-     * @param string $column
-     * @param mixed $value
-     * @param string $operator
-     * @return static
+     * Same validation rules as `whereDate()`.
      *
-     * @throws \InvalidArgumentException
+     * @param string $column   The column name to compare.
+     * @param mixed  $value    Date string or UNIX timestamp.
+     * @param string $operator Comparison operator (default '=').
+     *
+     * @return static          Fluent interface for chaining.
+     * @throws \InvalidArgumentException If the value is invalid.
      */
-    public function orWhereDate(string $column, mixed $value, string $operator = '=')
+    public function orWhereDate(string $column, mixed $value, string $operator = '='):static
     {
         if (!is_scalar($value)) {
             throw new \InvalidArgumentException("Non-scalar date value for column '{$column}'.");
@@ -1849,43 +1874,52 @@ final class PDOdb
     }
 
     /**
-     * WHERE condition for timestamp-based columns (alias for whereInt).
-     * Accepts integer Unix timestamps or numeric strings and enforces type safety.
+     * Adds a WHERE condition for timestamp-based columns.
      *
-     * @param string $column   Column name (e.g., 'created_at')
-     * @param int|string $value Unix timestamp or numeric string (e.g., 1720000000)
-     * @param string $operator SQL comparison operator (default '=')
-     * @return static
+     * This is an alias for `whereInt()`, enforcing strict integer validation.
+     * Accepts integer Unix timestamps or numeric strings.
+     *
+     * @param string     $column   Column name (e.g., 'created_at').
+     * @param int|string $value    Unix timestamp or numeric string (e.g., 1720000000).
+     * @param string     $operator SQL comparison operator (default '=').
+     *
+     * @return static              Fluent interface for chaining.
      */
-    public function whereTimestamp(string $column, int|string $value, string $operator = '=')
+    public function whereTimestamp(string $column, int|string $value, string $operator = '='):static
     {
         return $this->whereInt($column, $value, $operator);
     }
 
     /**
-     * OR WHERE condition for timestamp-based columns (alias for orWhereInt).
-     * Accepts integer Unix timestamps or numeric strings and enforces type safety.
+     * Adds an OR WHERE condition for timestamp-based columns.
      *
-     * @param string $column   Column name (e.g., 'created_at')
-     * @param int|string $value Unix timestamp or numeric string (e.g., 1720000000)
-     * @param string $operator SQL comparison operator (default '=')
-     * @return static
+     * This is an alias for `orWhereInt()`, enforcing strict integer validation.
+     * Accepts integer Unix timestamps or numeric strings.
+     *
+     * @param string     $column   Column name (e.g., 'created_at').
+     * @param int|string $value    Unix timestamp or numeric string (e.g., 1720000000).
+     * @param string     $operator SQL comparison operator (default '=').
+     *
+     * @return static              Fluent interface for chaining.
      */
-    public function orWhereTimestamp(string $column, int|string $value, string $operator = '=')
+    public function orWhereTimestamp(string $column, int|string $value, string $operator = '='):static
     {
         return $this->orWhereInt($column, $value, $operator);
     }
 
     /**
-     * WHERE condition using SQL functions as columns (e.g., DATE(created_at)).
-     * Only allows safe, predefined SQL functions to prevent injection.
+     * Adds a WHERE condition using SQL functions as columns (e.g., DATE(created_at)).
      *
-     * @param string $functionColumn A valid function-based column like "DATE(created_at)"
-     * @param mixed  $value          Comparison value (e.g. '2024-01-01')
-     * @param string $operator       SQL comparison operator (default '=')
-     * @return static
+     * Only allows safe, predefined SQL functions to prevent SQL injection.
+     *
+     * @param string $functionColumn A valid function-based column expression like "DATE(created_at)".
+     * @param mixed  $value          The comparison value (e.g., '2024-01-01').
+     * @param string $operator       SQL comparison operator (default '=').
+     *
+     * @return static                Fluent interface for chaining.
+     * @throws \InvalidArgumentException If the function expression is unsafe.
      */
-    public function whereFunc(string $functionColumn, mixed $value, string $operator = '=')
+    public function whereFunc(string $functionColumn, mixed $value, string $operator = '='):static
     {
         if (!$this->isSafeColumn($functionColumn)) {
             throw new \InvalidArgumentException("Unsafe function expression in WHERE: {$functionColumn}");
@@ -1940,10 +1974,19 @@ final class PDOdb
         return $this->secureWhere($field, $values, $operator, 'AND');
     }
 
+    /**
+     * Adds an OR WHERE IN condition with an array of values.
+     *
+     * @param string $field  The column name to filter.
+     * @param array  $values Non-empty array of values for the IN clause.
+     *
+     * @return static        Fluent interface for chaining.
+     * @throws \InvalidArgumentException If the array is empty.
+     */
     public function orWhereIn(string $field, array $values): static
     {
         if (empty($values)) {
-            throw new \InvalidArgumentException("whereIn() erwartet ein nicht-leeres Array.");
+            throw new \InvalidArgumentException("orWhereIn() expects a non-empty array.");
         }
 
         $placeholders = implode(', ', array_fill(0, count($values), '?'));
@@ -1955,23 +1998,26 @@ final class PDOdb
     /**
      * Adds an AND WHERE NOT IN condition to the query builder.
      *
-     * This method strictly validates the column name to prevent SQL injection,
+     * Strictly validates the column name to prevent SQL injection,
      * accepting only plain alphanumeric names, optionally with dots (e.g., 'id', 'table.column').
-     * It also ensures that the provided array of values is not empty.
+     * Ensures that the provided array of values is not empty.
      *
      * Example usage:
-     * `$db->whereNotIn('user_id', [4, 5, 6]);`
-     * `$db->whereNotIn('status', ['archived', 'deleted']);`
+     * ```php
+     * $db->whereNotIn('user_id', [4, 5, 6]);
+     * $db->whereNotIn('status', ['archived', 'deleted']);
+     * ```
      *
-     * @param string $column The column name to check against.
-     * @param array  $values A non-empty array of scalar values to be excluded from the NOT IN clause.
-     * @return static
-     * @throws \InvalidArgumentException If the column name is invalid, the values array is empty, or contains non-scalar values.
+     * @param string $field  The column name to check against.
+     * @param array  $values Non-empty array of scalar values to exclude.
+     *
+     * @return static        Fluent interface for chaining.
+     * @throws \InvalidArgumentException If the values array is empty or contains non-scalar values.
      */
     public function whereNotIn(string $field, array $values): static
     {
         if (empty($values)) {
-            throw new \InvalidArgumentException("whereNotIn() erwartet ein nicht-leeres Array.");
+            throw new \InvalidArgumentException("whereNotIn() expects a non-empty array.");
         }
 
         $placeholders = implode(', ', array_fill(0, count($values), '?'));
@@ -1980,11 +2026,19 @@ final class PDOdb
         return $this->secureWhere($field, $values, $operator, 'AND');
     }
 
-    public function OrWhereNotIn(string $field, array $values): static
+    /**
+     * Adds an OR WHERE NOT IN condition to the query builder.
+     *
+     * @param string $field  The column name to check against.
+     * @param array  $values Non-empty array of scalar values to exclude.
+     *
+     * @return static        Fluent interface for chaining.
+     * @throws \InvalidArgumentException If the values array is empty.
+     */
+    public function orWhereNotIn(string $field, array $values): static
     {
-
         if (empty($values)) {
-            throw new \InvalidArgumentException("whereNotIn() erwartet ein nicht-leeres Array.");
+            throw new \InvalidArgumentException("orWhereNotIn() expects a non-empty array.");
         }
 
         $placeholders = implode(', ', array_fill(0, count($values), '?'));
@@ -1996,19 +2050,30 @@ final class PDOdb
     /**
      * Adds an AND WHERE IS NULL condition to the query.
      *
-     * This method checks if the specified column's value is NULL.
+     * Checks if the specified column's value is NULL.
      *
-     * Example: `$db->whereIsNull('deleted_at');`
-     * // SQL: WHERE `deleted_at` IS NULL
+     * Example:
+     * ```php
+     * $db->whereIsNull('deleted_at');
+     * // Generates: WHERE `deleted_at` IS NULL
+     * ```
      *
-     * @param string $column The column name to check. Must be a safe alphanumeric name, optionally with dots.
-     * @return static
+     * @param string $field The column name to check. Must be a safe alphanumeric name, optionally with dots.
+     * @return static       Fluent interface for chaining.
      * @throws \InvalidArgumentException If the column name is invalid.
      */
     public function whereIsNull(string $field): static
     {
         return $this->secureWhere($field, null, 'IS NULL', 'AND');
     }
+
+    /**
+     * Adds an OR WHERE IS NULL condition to the query.
+     *
+     * @param string $field The column name to check.
+     * @return static
+     * @throws \InvalidArgumentException If the column name is invalid.
+     */
     public function orWhereIsNull(string $field): static
     {
         return $this->secureWhere($field, null, 'IS NULL', 'OR');
@@ -2017,19 +2082,30 @@ final class PDOdb
     /**
      * Adds an AND WHERE IS NOT NULL condition to the query.
      *
-     * This method checks if the specified column's value is NOT NULL.
+     * Checks if the specified column's value is NOT NULL.
      *
-     * Example: `$db->whereIsNotNull('email');`
-     * // SQL: WHERE `email` IS NOT NULL
+     * Example:
+     * ```php
+     * $db->whereIsNotNull('email');
+     * // Generates: WHERE `email` IS NOT NULL
+     * ```
      *
-     * @param string $column The column name to check. Must be a safe alphanumeric name, optionally with dots.
-     * @return static
+     * @param string $field The column name to check. Must be a safe alphanumeric name, optionally with dots.
+     * @return static       Fluent interface for chaining.
      * @throws \InvalidArgumentException If the column name is invalid.
      */
     public function whereIsNotNull(string $field): static
     {
         return $this->secureWhere($field, null, 'IS NOT NULL', 'AND');
     }
+
+    /**
+     * Adds an OR WHERE IS NOT NULL condition to the query.
+     *
+     * @param string $field The column name to check.
+     * @return static
+     * @throws \InvalidArgumentException If the column name is invalid.
+     */
     public function orWhereIsNotNull(string $field): static
     {
         return $this->secureWhere($field, null, 'IS NOT NULL', 'OR');
@@ -2038,22 +2114,38 @@ final class PDOdb
     /**
      * Adds an AND WHERE EQUAL condition to the query.
      *
-     * This is a semantic helper for simple equality checks, internally using the '=' operator.
+     * This is a semantic helper for simple equality checks, using the '=' operator internally.
      *
-     * Example: `$db->whereIs('status', 'active');`
-     * // SQL: WHERE `status` = ?
-     * Example: `$db->whereIs('id', 123);`
-     * // SQL: WHERE `id` = ?
+     * Example:
+     * ```php
+     * $db->whereIs('status', 'active');
+     * // Generates: WHERE `status` = ?
+     * ```
      *
-     * @param string $column The column name to check. Must be a safe alphanumeric name, optionally with dots.
-     * @param mixed  $value  The value to compare against.
-     * @return static
+     * Example:
+     * ```php
+     * $db->whereIs('id', 123);
+     * // Generates: WHERE `id` = ?
+     * ```
+     *
+     * @param string $field The column name to check. Must be a safe alphanumeric name, optionally with dots.
+     * @param mixed  $value The value to compare against.
+     * @return static       Fluent interface for chaining.
      * @throws \InvalidArgumentException If the column name is invalid.
      */
     public function whereIs(string $field, mixed $value): static
     {
         return $this->secureWhere($field, $value, '=', 'AND');
     }
+
+    /**
+     * Adds an OR WHERE EQUAL condition to the query.
+     *
+     * @param string $field The column name to check.
+     * @param mixed  $value The value to compare against.
+     * @return static
+     * @throws \InvalidArgumentException If the column name is invalid.
+     */
     public function orWhereIs(string $field, mixed $value): static
     {
         return $this->secureWhere($field, $value, '=', 'OR');
@@ -2062,24 +2154,37 @@ final class PDOdb
     /**
      * Adds an AND WHERE NOT EQUAL condition to the query.
      *
-     * This is a semantic helper for simple inequality checks, internally using the '!=' operator.
+     * This is a semantic helper for simple inequality checks, using the '!=' operator internally.
      *
-     * Example: `$db->whereIsNot('role', 'admin');`
-     * // SQL: WHERE `role` != ?
+     * Example:
+     * ```php
+     * $db->whereIsNot('role', 'admin');
+     * // Generates: WHERE `role` != ?
+     * ```
      *
-     * @param string $column The column name to check. Must be a safe alphanumeric name, optionally with dots.
-     * @param mixed  $value  The value to compare against.
-     * @return static
+     * @param string $field The column name to check. Must be a safe alphanumeric name, optionally with dots.
+     * @param mixed  $value The value to compare against.
+     * @return static       Fluent interface for chaining.
      * @throws \InvalidArgumentException If the column name is invalid.
      */
     public function whereIsNot(string $field, mixed $value): static
     {
         return $this->secureWhere($field, $value, '!=', 'AND');
     }
+
+    /**
+     * Adds an OR WHERE NOT EQUAL condition to the query.
+     *
+     * @param string $field The column name to check.
+     * @param mixed  $value The value to compare against.
+     * @return static
+     * @throws \InvalidArgumentException If the column name is invalid.
+     */
     public function orWhereIsNot(string $field, mixed $value): static
     {
-        return $this->secureWhere($field, $value, '!=', 'AND');
+        return $this->secureWhere($field, $value, '!=', 'OR');
     }
+
     /**
      * Store columns for ON DUPLICATE KEY UPDATE clause and optionally last insert ID.
      *
@@ -2096,48 +2201,75 @@ final class PDOdb
     }
 
     /**
-     * Adds a HAVING condition to the SQL query, with optional operator and logic chaining (AND/OR).
+     * Adds a HAVING condition to the SQL query, with optional operator and logical chaining (AND).
      *
      * Supports special values:
-     * - 'DBNULL'     → IS NULL
-     * - 'DBNOTNULL'  → IS NOT NULL
+     * - 'DBNULL'    → IS NULL
+     * - 'DBNOTNULL' → IS NOT NULL
      *
      * Example:
-     *   $db->having('SUM(score)', 10, '>')->orHaving('COUNT(id)', 'DBNOTNULL');
+     * ```php
+     * $db->having('SUM(score)', 10, '>')->orHaving('COUNT(id)', 'DBNOTNULL');
+     * ```
      *
-     * @param string $havingProp   Column or expression for the HAVING clause.
-     * @param mixed  $havingValue  Value to compare against, or special string like 'DBNULL'.
-     * @param string $operator     Comparison operator (default '=')
-     * @param string $cond         Logic condition to join with previous (AND/OR). Default: 'AND'
+     * @param string $column   Column or expression for the HAVING clause.
+     * @param mixed  $value    Value to compare against, or special string like 'DBNULL'.
+     * @param string $operator Comparison operator (default '=').
      *
-     * @return static
+     * @return static          Fluent interface for chaining.
      */
     public function having(string $column, mixed $value = null, string $operator = '=')
     {
         return $this->secureHaving($column, $value, $operator, 'AND');
     }
 
+    /**
+     * Adds a HAVING condition to the SQL query, with optional operator and logical chaining (OR).
+     *
+     * @param string $column   Column or expression for the HAVING clause.
+     * @param mixed  $value    Value to compare against, or special string like 'DBNULL'.
+     * @param string $operator Comparison operator (default '=').
+     *
+     * @return static          Fluent interface for chaining.
+     */
     public function orHaving(string $column, mixed $value = null, string $operator = '=')
     {
         return $this->secureHaving($column, $value, $operator, 'OR');
     }
 
+    /**
+     * Adds a HAVING condition to the internal HAVING stack with validation.
+     *
+     * Handles special values ('DBNULL', 'DBNOTNULL'), operator normalization,
+     * and ensures safe columns and operators.
+     *
+     * @param string $column   Column or expression for HAVING clause.
+     * @param mixed  $value    Value to compare against, or special values like 'DBNULL'.
+     * @param string $operator SQL comparison operator (default '=').
+     * @param string $cond     Logical condition to join with previous (AND/OR).
+     *
+     * @return static          Fluent interface for chaining.
+     * @throws \InvalidArgumentException On invalid or unsafe input.
+     */
     protected function secureHaving(string $column, mixed $value = null, string $operator = '=', string $cond = 'AND')
     {
         if (count($this->_having) === 0) {
             $cond = '';
         }
 
+        // Allow shorthand operator as array key, e.g. ['>'=>10]
         if (is_array($value) && count($value) === 1 && is_string(key($value))) {
             $operator = key($value);
             $value = current($value);
         }
 
+        // Normalize NULL shorthand
         if ($value === null && $operator !== null && !in_array(strtoupper($operator), ['IS', 'IS NOT'])) {
             $value = $operator;
             $operator = '=';
         }
 
+        // Special keywords for NULL checks
         if ($value === 'DBNULL') {
             $operator = 'IS';
             $value = null;
@@ -2150,21 +2282,19 @@ final class PDOdb
             throw new \InvalidArgumentException("Unsafe HAVING clause: boolean FALSE not allowed.");
         }
 
+        // Validate column and operator for non-null values
         if (!is_null($value)) {
-            $valueStr = is_scalar($value) ? (string) $value : 'NULL';
-
             if (
                 !$this->isSafeColumn($column) ||
                 !$this->isAllowedOperator($operator)
-                // <- intentionally no combinedWhere-check!
             ) {
                 throw new \InvalidArgumentException("Unsafe HAVING clause rejected: {$column} {$operator}");
             }
         }
 
+        // Handle NULL-specific operators explicitly
         if (is_null($value)) {
             $op = strtoupper(trim($operator));
-
             if ($op === '=' || $op === 'IS') {
                 $this->_having[] = [$cond, $column, 'IS', null];
             } elseif ($op === '!=' || $op === 'IS NOT') {
@@ -2172,9 +2302,10 @@ final class PDOdb
             } else {
                 throw new \InvalidArgumentException("Unsupported NULL operator in HAVING: {$operator}");
             }
-
+            return $this->_instance ?? $this;
         }
 
+        // Add standard HAVING condition
         $this->_having[] = [$cond, $column, $operator, $value];
         return $this->_instance ?? $this;
     }
@@ -2183,17 +2314,18 @@ final class PDOdb
      * Adds a JOIN clause to the query.
      *
      * Supports simple joins and subqueries:
-     *   $db->join('users u', 'u.id = p.user_id', 'LEFT')
-     *   $db->join($db->subQuery('orders'), 'o.user_id = u.id', 'INNER')
+     * ```php
+     * $db->join('users u', 'u.id = p.user_id', 'LEFT');
+     * $db->join($db->subQuery('orders'), 'o.user_id = u.id', 'INNER');
+     * ```
      *
-     * @param string|object $joinTable     Table name or subquery (as object with __toString).
-     * @param string        $joinCondition SQL ON condition, e.g. 'a.id = b.ref_id'.
-     * @param string        $joinType      Join type: 'LEFT', 'INNER', etc. (optional).
+     * @param string $joinTable     Table name or alias (subqueries should be handled as strings or objects with __toString).
+     * @param string $joinCondition SQL ON condition, e.g. 'a.id = b.ref_id'.
+     * @param string $joinType      Join type: 'LEFT', 'INNER', etc. (default: 'LEFT').
      *
      * @return static
-     * @throws \InvalidArgumentException if join type is invalid.
+     * @throws \InvalidArgumentException If the join type or table name is invalid.
      */
-
     public function join(string $joinTable, string $joinCondition, string $joinType = 'LEFT'): static
     {
         try {
@@ -2244,15 +2376,15 @@ final class PDOdb
     /**
      * Imports raw CSV data into a database table using LOAD DATA INFILE.
      *
-     * @param string      $importTable    The database table to import data into.
-     * @param string      $importFile     The file path to the CSV file.
-     * @param array|null  $importSettings Optional import settings:
-     *                                    - fieldChar: field delimiter (default ';')
-     *                                    - lineChar: line delimiter (default PHP_EOL)
-     *                                    - linesToIgnore: number of lines to skip (default 1)
-     *                                    - fieldEnclosure: optional enclosure character (e.g. '"')
-     *                                    - lineStarting: optional line start delimiter
-     *                                    - loadDataLocal: bool, whether to use LOCAL keyword
+     * @param string     $importTable    The database table to import data into.
+     * @param string     $importFile     The file path to the CSV file.
+     * @param array|null $importSettings Optional import settings:
+     *                                   - fieldChar: field delimiter (default ';')
+     *                                   - lineChar: line delimiter (default PHP_EOL)
+     *                                   - linesToIgnore: number of lines to skip (default 1)
+     *                                   - fieldEnclosure: optional enclosure character (e.g. '"')
+     *                                   - lineStarting: optional line start delimiter
+     *                                   - loadDataLocal: bool, whether to use LOCAL keyword
      *
      * @return bool True on successful import, false on failure.
      * @throws \Exception If the file does not exist or on query errors.
@@ -2266,20 +2398,20 @@ final class PDOdb
 
         // Default import settings
         $settings = [
-            'fieldChar' => ';',
-            'lineChar' => PHP_EOL,
-            'linesToIgnore' => 1,
+            'fieldChar'      => ';',
+            'lineChar'       => PHP_EOL,
+            'linesToIgnore'  => 1,
         ];
 
         // Merge user settings if provided
         if (is_array($importSettings)) {
             $settings = array_merge($settings, $importSettings);
         }
+
         $prefix = $this->prefix ?? '';
-        // Add table prefix if any
         $table = $prefix . $importTable;
 
-        // Escape backslashes for SQL
+        // Escape backslashes in file path for SQL syntax
         $escapedImportFile = str_replace("\\", "\\\\", $importFile);
 
         // Use LOCAL keyword if requested
@@ -2311,9 +2443,8 @@ final class PDOdb
             $result = $this->queryUnprepared($sql);
             return (bool)$result;
         } catch (\Exception $e) {
-            // Optional: log the error here if needed
+            // Optional: log error here if needed
             // error_log("LoadData error: " . $e->getMessage());
-            // Re-throw or return false depending on your preference
             throw $e;
         }
     }
@@ -2321,11 +2452,11 @@ final class PDOdb
     /**
      * Imports XML data into a database table using LOAD XML INFILE.
      *
-     * @param string      $importTable    The table into which data will be imported.
-     * @param string      $importFile     The XML file path.
-     * @param array|null  $importSettings Optional settings:
-     *                                    - linesToIgnore: int, lines to skip (default 0)
-     *                                    - rowTag: string, the XML row tag identifier
+     * @param string     $importTable    The table into which data will be imported.
+     * @param string     $importFile     The XML file path.
+     * @param array|null $importSettings Optional settings:
+     *                                   - linesToIgnore: int, lines to skip (default 0)
+     *                                   - rowTag: string, the XML row tag identifier
      *
      * @return bool True on successful import, false otherwise.
      * @throws \Exception If the import file does not exist or on query errors.
@@ -2346,8 +2477,8 @@ final class PDOdb
         if (is_array($importSettings)) {
             $settings = array_merge($settings, $importSettings);
         }
+
         $prefix = $this->prefix ?? '';
-        // Add table prefix if any
         $table = $prefix . $importTable;
 
         // Escape backslashes for SQL compatibility
@@ -2396,10 +2527,10 @@ final class PDOdb
             throw new \InvalidArgumentException("Invalid order direction: {$orderbyDirection}");
         }
 
-        // Clean field name
-        $orderByField = preg_replace("/[^ -a-z0-9\.\(\),_`\*'\" ]+/i", '', $orderByField);
+        // Sicherheitsfilter auf rohes ORDER BY-Feld anwenden
+        $this->validateSqlExpression($orderByField);
 
-        // Prefixing (only if no schema part exists)
+        // Prefixing (nur wenn kein schema.table vorhanden ist)
         $prefix = $this->prefix ?? '';
         if (!str_contains($orderByField, '.')) {
             $orderByField = $prefix . $orderByField;
@@ -2407,15 +2538,18 @@ final class PDOdb
             $orderByField = '`' . $prefix . $m[1] . '`.`' . $m[2] . '`';
         }
 
+        // Spezialfälle: FIELD() oder REGEXP
         if (is_array($customFieldsOrRegExp)) {
-            // FIELD() custom order
+            // 🟡 Sonderfall FIELD()
             $customFieldsOrRegExp = array_map(fn($v) => preg_replace("/[^\x80-\xffa-z0-9\.\(\),_` ]+/i", '', $v), $customFieldsOrRegExp);
             $orderByField = 'FIELD(' . $orderByField . ', "' . implode('","', $customFieldsOrRegExp) . '")';
 
         } elseif (is_string($customFieldsOrRegExp)) {
+            // 🟡 Sonderfall REGEXP
             if (!preg_match('/^[\w\s\^\$\.\*\+\?\|\[\]\(\)]+$/', $customFieldsOrRegExp)) {
                 throw new \InvalidArgumentException("Invalid regular expression: {$customFieldsOrRegExp}");
             }
+
             $orderByField .= " REGEXP '" . $customFieldsOrRegExp . "'";
 
         } elseif ($customFieldsOrRegExp !== null) {
@@ -2438,12 +2572,123 @@ final class PDOdb
     public function groupBy(string $groupByField): static
     {
         // Sanitize input to allow only common SQL characters in group by expressions
-        $groupByField = preg_replace("/[^-a-z0-9\.\(\),_\* <>=!]+/i", '', $groupByField);
-
+        // $groupByField = preg_replace("/[^-a-z0-9\.\(\),_\* <>=!]+/i", '', $groupByField);
+        $this->validateSqlExpression($groupByField); // Sicherheitsfilter aktivieren
         $this->_groupBy[] = $groupByField;
 
         return $this;
     }
+
+    protected function validateSqlExpression(string $expr): void
+    {
+        $expr = trim($expr);
+        $this->sanitizeSqlExpr($expr);
+
+        // Einfache Spalte
+        if (preg_match('/^[a-zA-Z0-9_.-]+$/', $expr)) {
+            return;
+        }
+
+        // Numerisches oder String-Literal
+        if (is_numeric($expr) || $this->isQuotedString($expr)) {
+            return;
+        }
+
+        // CASE ... WHEN ... THEN ... END
+        if (preg_match('/^CASE\s+WHEN\s.+\s+THEN\s.+(\s+WHEN\s.+\s+THEN\s.+)*(\s+ELSE\s.+)?\s+END$/is', $expr)) {
+            return;
+        }
+
+        // Funktionsprüfung
+        if (preg_match('/^([a-zA-Z0-9_]+)\s*\((.*)\)$/s', $expr, $match)) {
+            $function = strtoupper($match[1]);
+            $args = $this->splitFunctionArgs($match[2]);
+
+            if (!in_array($function, $this->getAllowedFunctions(), true)) {
+                throw new \InvalidArgumentException("Function not allowed: $function");
+            }
+
+            foreach ($args as $arg) {
+                $this->validateSqlExpression($arg); // rekursiv
+            }
+
+            return;
+        }
+
+        throw new \InvalidArgumentException("Invalid SQL expression: $expr");
+    }
+
+    protected function sanitizeSqlExpr(string $expr): void
+    {
+        $forbidden = [
+            '/;/', '/--/', '/#/', '/\/\*/', // Kommentar oder Statement-Ende
+            '/\b(UNION|DROP|DELETE|UPDATE|INSERT|REPLACE|SLEEP|BENCHMARK|LOAD_FILE|OUTFILE)\b/i'
+        ];
+
+        foreach ($forbidden as $pattern) {
+            if (preg_match($pattern, $expr)) {
+                throw new \InvalidArgumentException("Illegal keyword in SQL expression: $expr");
+            }
+        }
+    }
+
+    protected function getAllowedFunctions(): array
+    {
+        return [
+            'DATE', 'YEAR', 'MONTH', 'DAY', 'HOUR', 'MINUTE', 'SECOND',
+            'DATE_FORMAT', 'CONCAT', 'CONCAT_WS', 'LEFT', 'RIGHT', 'UPPER', 'LOWER',
+            'LENGTH', 'TRIM', 'ROUND', 'ABS', 'IF', 'IFNULL', 'COALESCE',
+            'SUBSTRING', 'SUBSTRING_INDEX', 'LOCATE', 'FIELD', 'GREATEST', 'LEAST',
+            'LPAD', 'RPAD', 'MD5', 'CASE', 'CONVERT_TZ', 'JSON_UNQUOTE', 'JSON_EXTRACT'
+        ];
+    }
+
+    protected function splitFunctionArgs(string $args): array
+    {
+        $result = [];
+        $depth = 0;
+        $buffer = '';
+        $inQuote = false;
+        $quoteChar = '';
+        $len = strlen($args);
+
+        for ($i = 0; $i < $len; $i++) {
+            $char = $args[$i];
+
+            if (($char === "'" || $char === '"')) {
+                if ($inQuote && $char === $quoteChar) {
+                    $inQuote = false;
+                } elseif (!$inQuote) {
+                    $inQuote = true;
+                    $quoteChar = $char;
+                }
+            } elseif (!$inQuote) {
+                if ($char === '(') {
+                    $depth++;
+                } elseif ($char === ')') {
+                    $depth--;
+                } elseif ($char === ',' && $depth === 0) {
+                    $result[] = trim($buffer);
+                    $buffer = '';
+                    continue;
+                }
+            }
+
+            $buffer .= $char;
+        }
+
+        if (trim($buffer) !== '') {
+            $result[] = trim($buffer);
+        }
+
+        return $result;
+    }
+
+    protected function isQuotedString(string $arg): bool
+    {
+        return preg_match("/^'[^']*'$/", $arg) || preg_match('/^"[^"]*"$/', $arg);
+    }
+
 
     /**
      * Sets the current table lock method.
@@ -2513,7 +2758,7 @@ final class PDOdb
      * Unlocks all tables in the current database connection.
      * Also commits any pending transactions.
      *
-     * @return static Returns the current instance for chaining.
+     * @return static Fluent interface for chaining.
      * @throws \Exception If unlocking fails.
      */
     public function unlock(): static
@@ -2564,17 +2809,15 @@ final class PDOdb
     }
 
     /*
-    * if you want a real escape you must unkomment the dummy method
-
-        public function escape(string $str): string
-        {
-            $pdo = $this->connect($this->defConnectionName);
-            $quoted = $pdo->quote($str);
-            // quote() gibt den String mit Anführungszeichen zurück, z.B. 'abc', die wollen wir entfernen:
-            return substr($quoted, 1, -1);
-        }
-
+     * If you want a real escape, uncomment the method below:
      *
+     * public function escape(string $str): string
+     * {
+     *     $pdo = $this->connect($this->defConnectionName);
+     *     $quoted = $pdo->quote($str);
+     *     // PDO::quote() returns the string with quotes, e.g. 'abc', remove them:
+     *     return substr($quoted, 1, -1);
+     * }
      */
 
     /**
@@ -2591,29 +2834,6 @@ final class PDOdb
             // Optional: Log error if needed
             return false;
         }
-    }
-
-    /**
-     * Determines a legacy type character for a given PHP value.
-     * Used for internal compatibility (e.g. legacy binding logic).
-     *
-     * @param mixed $item The value to check.
-     * @return string One of:
-     *                's' => string or null,
-     *                'i' => int or bool,
-     *                'd' => float (double),
-     *                'b' => object (e.g. blobs),
-     *                ''  => unknown or unsupported.
-     */
-    protected function _determineType($item): string
-    {
-        return match (gettype($item)) {
-            'string', 'NULL'   => 's',
-            'integer', 'boolean' => 'i',
-            'double'           => 'd',
-            'object'           => 'b',
-            default            => '',
-        };
     }
 
     /**
@@ -2666,11 +2886,11 @@ final class PDOdb
      *   In this case, the subquery SQL is embedded and its parameters are appended to the bindings.
      *
      * Example:
-     *   $db->_buildPair('=', 5); → " = ? " (and adds value 5 to bound parameters)
-     *   $db->_buildPair('IN', $subQueryObj); → " IN (SELECT ...) AS x "
+     *   $db->_buildPair('=', 5); // returns " = ? " and binds 5
+     *   $db->_buildPair('IN', $subQueryObj); // returns " IN (SELECT ...) " and binds subquery params
      *
      * @param string $operator SQL comparison operator (e.g. '=', 'IN', '>', etc.).
-     * @param mixed $value A scalar value or an object that represents a subquery.
+     * @param mixed  $value    A scalar value or an object representing a subquery.
      *
      * @return string SQL fragment for the condition.
      * @throws \InvalidArgumentException If a subquery object lacks getSubQuery().
@@ -2678,13 +2898,13 @@ final class PDOdb
      */
     protected function _buildPair(string $operator, mixed $value): string
     {
-        // Normaler Wert → einfach binden
+        // Normal scalar value → bind parameter
         if (!is_object($value)) {
             $this->_bindParam($value);
             return " {$operator} ? ";
         }
 
-        // SubQuery-Objekt prüfen
+        // Check if value is a subquery object
         if (!method_exists($value, 'getSubQuery')) {
             throw new \InvalidArgumentException('Subquery object must implement getSubQuery method');
         }
@@ -2697,7 +2917,7 @@ final class PDOdb
 
         $this->_bindParams($subQuery['params']);
 
-        // Kein Alias hier erlaubt!
+        // Note: Alias is not included here (no alias allowed)
         return " {$operator} ({$subQuery['query']}) ";
     }
 
@@ -2768,7 +2988,13 @@ final class PDOdb
         }
     }
 
-
+    /**
+     * Builds the initial SELECT part of the query with columns and table name.
+     *
+     * Does nothing if the query is already set.
+     *
+     * @return void
+     */
     protected function _buildTable(): void
     {
         if (!empty($this->_query)) {
@@ -2833,7 +3059,6 @@ final class PDOdb
             throw new \Exception("Failed to prepare query: " . $e->getMessage(), (int)$e->getCode());
         }
     }
-
 
     /**
      * Helper method to build SQL fragments for INSERT and UPDATE statements.
@@ -2979,7 +3204,18 @@ final class PDOdb
         }
     }
 
-
+    /**
+     * Builds a SQL condition clause (WHERE or HAVING) with proper binding.
+     *
+     * @param string $operator   The SQL keyword, e.g. 'WHERE' or 'HAVING'.
+     * @param array  $conditions Reference to an array of conditions:
+     *                           [ [concat, column, comparison, value], ... ]
+     *
+     * @throws \InvalidArgumentException On invalid input or missing values.
+     * @throws \UnexpectedValueException On invalid subquery structure.
+     *
+     * @return void
+     */
     protected function _buildCondition(string $operator, array &$conditions): void
     {
         if (empty($conditions)) {
@@ -3772,7 +4008,19 @@ final class PDOdb
         return $this->joinWhere($table, $column, $value, $operator, 'OR');
     }
 
-
+    /**
+     * Builds the JOIN clauses for the current query.
+     *
+     * Iterates over all pending JOIN definitions, appends JOIN statements
+     * including the JOIN type, table, and ON condition.
+     *
+     * Also appends any additional WHERE conditions tied specifically to the joined tables
+     * (added via joinWhere or joinOrWhere), supporting NULL comparisons and parameter binding.
+     *
+     * This method is called internally when assembling the final SQL query.
+     *
+     * @return void
+     */
     protected function _buildJoin(): void
     {
         foreach ($this->_pendingJoins as [$joinType, $joinTable, $joinCondition]) {
@@ -3793,64 +4041,34 @@ final class PDOdb
         }
     }
 
+    /**
+     * Escapes a table and column identifier for use in SQL queries.
+     *
+     * Converts dot notation (e.g. "table.column") into properly backtick-quoted form
+     * suitable for MySQL (e.g. "`table`.`column`") to prevent syntax errors and
+     * SQL injection via identifiers.
+     *
+     * @param string $column The column identifier, possibly with table prefix (dot notation).
+     * @return string The escaped identifier with backticks.
+     */
     protected function escapeTableAndColumn(string $column): string
     {
         return '`' . str_replace('.', '`.`', $column) . '`';
     }
 
     /**
-     * Converts a condition into a SQL string and adds necessary bindings.
+     * Automatically expands array parameters in the bound parameters list into multiple placeholders in the SQL query.
      *
-     * @param string $operator
-     * @param mixed  $value
-     * @return string
-     */
-    /**
-     * Converts a condition into a SQL string and adds necessary bindings.
+     * For example, a query with a condition like "WHERE id IN (?)" and a parameter [1, 2, 3]
+     * will be transformed into "WHERE id IN (?, ?, ?)" with the parameters flattened to [1, 2, 3].
      *
-     * @param string $operator SQL comparison operator.
-     * @param mixed  $value    Value to compare.
-     * @return string SQL fragment with placeholder(s).
-     * @throws \InvalidArgumentException
-     */
-    protected function conditionToSql(string $operator, mixed $value): string
-    {
-        $operator = strtoupper(trim($operator));
-
-        switch ($operator) {
-            case 'IN':
-            case 'NOT IN':
-                if (!is_array($value)) {
-                    throw new \InvalidArgumentException("Operator $operator requires an array as value.");
-                }
-                $placeholders = implode(', ', array_fill(0, count($value), '?'));
-                $this->_bindParams($value);
-                return " $operator ($placeholders)";
-
-            case 'BETWEEN':
-            case 'NOT BETWEEN':
-                if (!is_array($value) || count($value) !== 2) {
-                    throw new \InvalidArgumentException("Operator $operator requires an array with two values.");
-                }
-                $this->_bindParams($value);
-                return " $operator ? AND ?";
-
-            default:
-                if (!in_array($operator, ['=', '!=', '<', '<=', '>', '>=', '<>', 'LIKE', 'NOT LIKE', 'IS', 'IS NOT'], true)) {
-                    throw new \InvalidArgumentException("Unsupported SQL operator: $operator");
-                }
-                if ($value === null) {
-                    return " $operator NULL";
-                }
-
-                $this->_bindParam($value);
-                return " $operator ?";
-        }
-    }
-
-    /**
-     * Automatically expands array parameters into multiple placeholders.
-     * Example: WHERE id IN (?) with [1, 2, 3] → WHERE id IN (?, ?, ?) and flat param list.
+     * This method scans through the current bound parameters (`_bindParams`),
+     * replaces any single placeholder '?' with the appropriate number of placeholders if the bound value is an array,
+     * and flattens the parameters list accordingly.
+     *
+     * This is necessary because PDO does not support binding an array directly to a single placeholder.
+     *
+     * @return void
      */
     protected function expandArrayParams(): void
     {
@@ -3885,7 +4103,7 @@ final class PDOdb
         }
 
         $this->_query = $newQuery;
-        $this->_bindParams = $newParams; // <-- wichtig: flach machen
+        $this->_bindParams = $newParams;
     }
 
     /**
