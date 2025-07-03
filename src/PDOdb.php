@@ -1076,6 +1076,8 @@ final class PDOdb
             $this->_query .= ' LOCK IN SHARE MODE';
         }
 
+
+
         try {
             $pdo  = $this->connect($this->defConnectionName);
             $stmt = $pdo->prepare($this->_query);
@@ -1420,33 +1422,119 @@ final class PDOdb
         }
     }
 
-    /**
-     * Adds a WHERE condition to the query, chaining multiple conditions with AND/OR.
-     *
-     * Usage example:
-     *  $db->where('id', 7)->where('title', 'MyTitle', '=', 'AND');
-     *
-     * @param string $whereProp  Column name to filter by.
-     * @param mixed  $whereValue Value to compare against. Use 'DBNULL' for IS NULL checks.
-     * @param string $operator   Comparison operator, e.g. '=', '<', 'LIKE'. Default '='.
-     * @param string $cond       Logical condition to join with previous where clauses ('AND' or 'OR'). Default 'AND'.
-     *
-     * @return static Returns $this for method chaining.
-     */
-    public function where(string $column, mixed $value = null, string $operator = '=', string $cond = 'AND')
+    public function testReset(): void
     {
-        // First condition gets no logical connector
+        $this->reset();
+    }
+
+    /**
+     * Check whether a column name or SQL function expression is considered safe for use in WHERE, SELECT etc.
+     *
+     * This method validates that the column is either:
+     *  1. A valid plain column name (including optional table alias and backticks)
+     *  2. A safe SQL function call (e.g. COUNT(*), SUM(price), DATE(created_at))
+     *
+     * @param string $column The column name or SQL function to validate
+     * @return bool True if safe, false if potentially dangerous or malformed
+     */
+    protected function isSafeColumn(string $column): bool
+    {
+        // Accept plain column names: e.g. id, table.id, `table`.`id`, etc.
+        if (preg_match('/^[a-zA-Z0-9_.`]+$/', $column)) {
+            return true;
+        }
+
+        // Accept safe SQL functions with a single argument (column or *):
+        // e.g. COUNT(*), SUM(price), DATE(`created_at`)
+        if (preg_match('/^([A-Z_]+)\s*\(\s*(\*|[a-zA-Z0-9_.`]+)\s*\)$/i', $column, $matches)) {
+            $allowedFunctions = [
+                'DATE', 'YEAR', 'MONTH', 'DAY', 'TIME', 'HOUR', 'MINUTE', 'SECOND',
+                'COUNT', 'SUM', 'AVG', 'MIN', 'MAX'
+            ];
+
+            $func = strtoupper($matches[1]);
+            $arg  = $matches[2];
+
+            return in_array($func, $allowedFunctions, true)
+                && ($arg === '*' || preg_match('/^[a-zA-Z0-9_.`]+$/', $arg));
+        }
+
+        // Reject anything else (e.g. nested functions, expressions, subqueries)
+        return false;
+    }
+
+
+    /**
+     * Validates whether the given SQL operator is allowed and safe to use in WHERE clauses.
+     *
+     * Only a specific set of common and secure SQL comparison operators is permitted.
+     * This helps prevent abuse of unsupported or dangerous operators (e.g. user-supplied "OR", "||", etc).
+     *
+     * @param string $op The SQL operator to check (e.g. '=', 'LIKE', 'IS NOT')
+     * @return bool True if the operator is in the allowed list, false otherwise
+     */
+    protected function isAllowedOperator(string $op): bool
+    {
+        $allowed = [
+            '=', '!=', '<>', '<', '<=', '>', '>=',
+            'LIKE', 'NOT LIKE',
+            'IN', 'NOT IN',
+            'BETWEEN', 'NOT BETWEEN',
+            'IS', 'IS NOT'
+        ];
+
+        return in_array(strtoupper(trim($op)), $allowed, true);
+    }
+
+    /**
+     * Performs a basic safety check for raw SQL fragments to be used in prepared statements.
+     *
+     * This method checks two things:
+     *  1. The number of placeholders (?) matches the number of provided bindings – to avoid SQL logic errors.
+     *  2. A blacklist-based pattern match to detect potentially dangerous SQL constructs
+     *     (like UNION, SELECT, SLEEP, etc.) that might indicate an injection attempt or misuse.
+     *
+     * NOTE: This is a lightweight safeguard and **should not** be considered a full SQL injection protection.
+     *       Its main purpose is to catch obvious misuse in rawQuery() and similar methods.
+     *
+     * @param string $sql      The raw SQL string containing question-mark placeholders.
+     * @param array  $bindings The values to bind to the placeholders.
+     * @return bool True if the SQL appears safe, false if it contains suspicious patterns or placeholder mismatch.
+     */
+    protected function isSafeRaw(string $sql, array $bindings): bool
+    {
+        return substr_count($sql, '?') === count($bindings)
+            && !preg_match('/(;|--|\bUNION\b|\bSELECT\b|\bSLEEP\b|\bBENCHMARK\b|\bDROP\b|\bLOAD_FILE\b|\bOUTFILE\b)/i', $sql);
+    }
+    /**
+     * Adds a WHERE condition to the query builder.
+     *
+     * Performs column and operator validation, handles NULL logic,
+     * ensures scalar or array values only, and appends the condition
+     * to the internal _where stack.
+     *
+     * @param string $column   The column name (validated)
+     * @param mixed  $value    The value or operator if shorthand
+     * @param string $operator Comparison operator (defaults to '=')
+     * @param string $cond     Logical condition: AND / OR
+     * @return static
+     * @throws \InvalidArgumentException
+     */
+    protected function secureWhere(string $column, mixed $value = null, string $operator = '=', string $cond = 'AND')
+    {
         if (count($this->_where) === 0) {
             $cond = '';
         }
 
-        // If only two parameters passed, treat $operator as value and default to '='
         if ($value === null && $operator !== null && !in_array(strtoupper($operator), ['IS', 'IS NOT'])) {
             $value = $operator;
             $operator = '=';
         }
 
-        // Special handling for NULL comparisons
+        if (!$this->isSafeColumn($column) || !$this->isAllowedOperator($operator)) {
+            throw new \InvalidArgumentException("Unsafe WHERE clause rejected: {$column} {$operator}");
+        }
+
         if (is_null($value)) {
             $op = strtoupper(trim($operator));
 
@@ -1461,57 +1549,488 @@ final class PDOdb
             return $this->_instance ?? $this;
         }
 
-        // Regular condition
+        if (is_array($value)) {
+            foreach ($value as $val) {
+                if (!is_scalar($val) && !is_null($val)) {
+                    throw new \InvalidArgumentException("Invalid value type in array for WHERE clause.");
+                }
+            }
+        } elseif (!is_scalar($value) && !is_null($value)) {
+            throw new \InvalidArgumentException("Invalid value type for WHERE clause.");
+        }
+
         $this->_where[] = [$cond, $column, $operator, $value];
 
         return $this->_instance ?? $this;
     }
 
     /**
-     * Adds an OR WHERE condition to the query.
-     * This method appends a condition joined by OR to existing WHERE clauses.
+     * Adds an AND WHERE condition to the query.
      *
-     * Note: This should be called only after at least one `where()` condition
-     *       has been set to avoid invalid SQL syntax.
-     *
-     * Example usage:
-     * ```php
-     * $db->where('status', 'active')->orWhere('role', 'admin');
-     * ```
-     *
-     * @param string $whereProp The name of the database column.
-     * @param mixed $whereValue The value to compare the column against.
-     * @param string $operator The comparison operator (default '=')
-     *
-     * @return static Returns the current instance for method chaining.
+     * @param string $column   Column name
+     * @param mixed  $value    Value to compare
+     * @param string $operator Comparison operator (default '=')
+     * @return static
      */
-    public function orWhere(string $column, mixed $value = null, string $operator = '='): static
+    public function where(string $column, mixed $value = null, string $operator = '=')
     {
-        // If only two parameters passed, treat $operator as value and default to '='
-        if ($value === null && $operator !== null && !in_array(strtoupper($operator), ['IS', 'IS NOT'])) {
-            $value = $operator;
-            $operator = '=';
-        }
-
-        // Special handling for NULL comparisons
-        if (is_null($value)) {
-            $op = strtoupper(trim($operator));
-
-            if ($op === '=' || $op === 'IS') {
-                $this->_where[] = ["OR", $column, 'IS', null];
-            } elseif ($op === '!=' || $op === 'IS NOT') {
-                $this->_where[] = ["OR", $column, 'IS NOT', null];
-            } else {
-                throw new \InvalidArgumentException("Unsupported NULL comparison operator: {$operator}");
-            }
-
-            return $this->_instance ?? $this;
-        }
-
-        // Regular OR condition
-        return $this->where($column, $value, $operator, 'OR');
+        return $this->secureWhere($column, $value, $operator, 'AND');
     }
 
+    /**
+     * Adds an OR WHERE condition to the query.
+     *
+     * @param string $column   Column name
+     * @param mixed  $value    Value to compare
+     * @param string $operator Comparison operator (default '=')
+     * @return static
+     */
+    public function orWhere(string $column, mixed $value = null, string $operator = '=')
+    {
+        return $this->secureWhere($column, $value, $operator, 'OR');
+    }
+
+    // New type-specific WHERE methods for stricter validation
+    /**
+     * Adds an AND WHERE condition expecting an integer value.
+     *
+     * @param string $column
+     * @param mixed  $value
+     * @param string $operator
+     * @return static
+     */
+    public function whereInt(string $column, mixed $value, string $operator = '=')
+    {
+        // Cast attempt
+        $tmp = (int)$value;
+
+        // Reject if casting alters value meaningfully (e.g. '1abc' → 1, '1);...' → 1)
+        if ((string)$tmp !== (string)$value && !is_int($value)) {
+            throw new \InvalidArgumentException("Invalid integer value for column '{$column}'.");
+        }
+
+        return $this->secureWhere($column, $tmp, $operator, 'AND');
+    }
+
+    /**
+     * Adds a secure OR-based integer WHERE condition.
+     * Only allows clean integers. Rejects dangerous strings like '1); DROP ...'.
+     */
+    public function orWhereInt(string $column, mixed $value, string $operator = '=')
+    {
+        // Cast attempt
+        $tmp = (int)$value;
+
+        // Reject if casting alters value meaningfully (e.g. '1abc' → 1, '1);...' → 1)
+        if ((string)$tmp !== (string)$value && !is_int($value)) {
+            throw new \InvalidArgumentException("Invalid integer value for column '{$column}'.");
+        }
+
+        return $this->secureWhere($column, $tmp, $operator, 'OR');
+    }
+
+
+    /**
+     * Adds a WHERE condition with strict float validation.
+     *
+     * This method ensures that the provided value is a valid float, integer, or numeric string.
+     * Invalid or non-numeric values will trigger an InvalidArgumentException.
+     *
+     * Example: $db->whereFloat('price', 19.99);
+     *
+     * @param string $column   The column name to compare.
+     * @param mixed  $value    The value to compare. Must be float-compatible.
+     * @param string $operator Optional comparison operator (default '=').
+     *
+     * @return static
+     *
+     * @throws \InvalidArgumentException
+     */
+    public function whereFloat(string $column, mixed $value, string $operator = '=')
+    {
+        if (!is_float($value) && !is_int($value) && !preg_match('/^-?\d+(\.\d+)?$/', (string)$value)) {
+            throw new \InvalidArgumentException("Invalid float value for column '{$column}'.");
+        }
+
+        return $this->secureWhere($column, (float)$value, $operator, 'AND');
+    }
+
+    /**
+     * Adds an OR WHERE condition with strict float validation.
+     *
+     * Ensures the value is a valid float, integer, or numeric string.
+     * If not, an InvalidArgumentException is thrown.
+     *
+     * Example: $db->orWhereFloat('amount', '120.50');
+     *
+     * @param string $column   The column name to compare.
+     * @param mixed  $value    The value to compare. Must be float-compatible.
+     * @param string $operator Optional comparison operator (default '=').
+     *
+     * @return static
+     *
+     * @throws \InvalidArgumentException
+     */
+    public function orWhereFloat(string $column, mixed $value, string $operator = '=')
+    {
+        if (!is_float($value) && !is_int($value) && !preg_match('/^-?\d+(\.\d+)?$/', (string)$value)) {
+            throw new \InvalidArgumentException("Invalid float value for column '{$column}'.");
+        }
+
+        return $this->secureWhere($column, (float)$value, $operator, 'OR');
+    }
+
+    /**
+     * Adds a WHERE condition with safe string handling.
+     *
+     * Ensures the value is a scalar and safely castable to string.
+     * Accepts any length string and delegates binding to PDO.
+     *
+     * Example: $db->whereString('username', 'admin');
+     *
+     * @param string $column   The column name to compare.
+     * @param mixed  $value    The value to compare. Will be cast to string.
+     * @param string $operator Optional comparison operator (default '=').
+     *
+     * @return static
+     *
+     * @throws \InvalidArgumentException
+     */
+    public function whereString(string $column, mixed $value, string $operator = '=')
+    {
+        if (!is_scalar($value)) {
+            throw new \InvalidArgumentException("Non-scalar value given for column '{$column}'.");
+        }
+
+        return $this->secureWhere($column, (string)$value, $operator, 'AND');
+    }
+
+    /**
+     * Adds an OR WHERE condition with safe string handling.
+     *
+     * Ensures the value is a scalar and safely castable to string.
+     * Accepts any length string and delegates binding to PDO.
+     *
+     * Example: $db->orWhereString('description', 'example text');
+     *
+     * @param string $column   The column name to compare.
+     * @param mixed  $value    The value to compare. Will be cast to string.
+     * @param string $operator Optional comparison operator (default '=').
+     *
+     * @return static
+     *
+     * @throws \InvalidArgumentException
+     */
+    public function orWhereString(string $column, mixed $value, string $operator = '=')
+    {
+        if (!is_scalar($value)) {
+            throw new \InvalidArgumentException("Non-scalar value given for column '{$column}'.");
+        }
+
+        return $this->secureWhere($column, (string)$value, $operator, 'OR');
+    }
+
+    /**
+     * Add a WHERE condition for date or datetime columns.
+     * Accepts strings in 'Y-m-d' or 'Y-m-d H:i:s' format,
+     * or a valid 10-digit UNIX timestamp (converted internally).
+     *
+     * @param string $column
+     * @param mixed $value  A date string or UNIX timestamp
+     * @param string $operator
+     * @return static
+     *
+     * @throws \InvalidArgumentException if the value is not a valid date or timestamp
+     */
+    public function whereDate(string $column, mixed $value, string $operator = '=')
+    {
+        if (!is_scalar($value)) {
+            throw new \InvalidArgumentException("Non-scalar date value for column '{$column}'.");
+        }
+
+        $str = (string)$value;
+
+        // Allow 'Y-m-d' or 'Y-m-d H:i:s'
+        if (
+            \DateTime::createFromFormat('Y-m-d', $str) === false &&
+            \DateTime::createFromFormat('Y-m-d H:i:s', $str) === false
+        ) {
+            // Allow 10-digit UNIX timestamps
+            if (!preg_match('/^\d{10}$/', $str)) {
+                throw new \InvalidArgumentException("Invalid date or datetime format for column '{$column}': '{$str}'");
+            }
+
+            // Convert timestamp to 'Y-m-d H:i:s'
+            $str = date('Y-m-d H:i:s', (int)$str);
+        }
+
+        return $this->secureWhere($column, $str, $operator, 'AND');
+    }
+    /**
+     * Add an OR WHERE condition for date or datetime columns.
+     * Same validation as whereDate().
+     *
+     * @param string $column
+     * @param mixed $value
+     * @param string $operator
+     * @return static
+     *
+     * @throws \InvalidArgumentException
+     */
+    public function orWhereDate(string $column, mixed $value, string $operator = '=')
+    {
+        if (!is_scalar($value)) {
+            throw new \InvalidArgumentException("Non-scalar date value for column '{$column}'.");
+        }
+
+        $str = (string)$value;
+
+        if (
+            \DateTime::createFromFormat('Y-m-d', $str) === false &&
+            \DateTime::createFromFormat('Y-m-d H:i:s', $str) === false
+        ) {
+            if (!preg_match('/^\d{10}$/', $str)) {
+                throw new \InvalidArgumentException("Invalid date or datetime format for column '{$column}': '{$str}'");
+            }
+
+            $str = date('Y-m-d H:i:s', (int)$str);
+        }
+
+        return $this->secureWhere($column, $str, $operator, 'OR');
+    }
+
+    /**
+     * WHERE condition for timestamp-based columns (alias for whereInt).
+     * Accepts integer Unix timestamps or numeric strings and enforces type safety.
+     *
+     * @param string $column   Column name (e.g., 'created_at')
+     * @param int|string $value Unix timestamp or numeric string (e.g., 1720000000)
+     * @param string $operator SQL comparison operator (default '=')
+     * @return static
+     */
+    public function whereTimestamp(string $column, int|string $value, string $operator = '=')
+    {
+        return $this->whereInt($column, $value, $operator);
+    }
+
+    /**
+     * OR WHERE condition for timestamp-based columns (alias for orWhereInt).
+     * Accepts integer Unix timestamps or numeric strings and enforces type safety.
+     *
+     * @param string $column   Column name (e.g., 'created_at')
+     * @param int|string $value Unix timestamp or numeric string (e.g., 1720000000)
+     * @param string $operator SQL comparison operator (default '=')
+     * @return static
+     */
+    public function orWhereTimestamp(string $column, int|string $value, string $operator = '=')
+    {
+        return $this->orWhereInt($column, $value, $operator);
+    }
+
+    /**
+     * WHERE condition using SQL functions as columns (e.g., DATE(created_at)).
+     * Only allows safe, predefined SQL functions to prevent injection.
+     *
+     * @param string $functionColumn A valid function-based column like "DATE(created_at)"
+     * @param mixed  $value          Comparison value (e.g. '2024-01-01')
+     * @param string $operator       SQL comparison operator (default '=')
+     * @return static
+     */
+    public function whereFunc(string $functionColumn, mixed $value, string $operator = '=')
+    {
+        if (!$this->isSafeColumn($functionColumn)) {
+            throw new \InvalidArgumentException("Unsafe function expression in WHERE: {$functionColumn}");
+        }
+
+        return $this->secureWhere($functionColumn, $value, $operator, 'AND');
+    }
+
+    /**
+     * OR WHERE condition using SQL functions as columns (e.g., DATE(created_at)).
+     * Only allows safe, predefined SQL functions to prevent injection.
+     *
+     * @param string $functionColumn A valid function-based column like "DATE(created_at)"
+     * @param mixed  $value          Comparison value (e.g. '2024-01-01')
+     * @param string $operator       SQL comparison operator (default '=')
+     * @return static
+     */
+    public function orWhereFunc(string $functionColumn, mixed $value, string $operator = '=')
+    {
+        if (!$this->isSafeColumn($functionColumn)) {
+            throw new \InvalidArgumentException("Unsafe function expression in WHERE: {$functionColumn}");
+        }
+
+        return $this->secureWhere($functionColumn, $value, $operator, 'OR');
+    }
+
+    /**
+     * Adds an AND WHERE IN condition to the query builder.
+     *
+     * This method strictly validates the column name to prevent SQL injection,
+     * accepting only plain alphanumeric names, optionally with dots (e.g., 'id', 'table.column').
+     * It also ensures that the provided array of values is not empty.
+     *
+     * Example usage:
+     * `$db->whereIn('user_id', [1, 2, 3]);`
+     * `$db->whereIn('category', ['electronics', 'books']);`
+     *
+     * @param string $column The column name to check against.
+     * @param array  $values A non-empty array of scalar values to be included in the IN clause.
+     * @return static
+     * @throws \InvalidArgumentException If the column name is invalid or the values array is empty or contains non-scalar values.
+     */
+    public function whereIn(string $field, array $values): static
+    {
+        if (empty($values)) {
+            throw new \InvalidArgumentException("whereIn() erwartet ein nicht-leeres Array.");
+        }
+
+        $placeholders = implode(', ', array_fill(0, count($values), '?'));
+        $operator = "IN ($placeholders)";
+
+        return $this->secureWhere($field, $values, $operator, 'AND');
+    }
+
+    public function orWhereIn(string $field, array $values): static
+    {
+        if (empty($values)) {
+            throw new \InvalidArgumentException("whereIn() erwartet ein nicht-leeres Array.");
+        }
+
+        $placeholders = implode(', ', array_fill(0, count($values), '?'));
+        $operator = "IN ($placeholders)";
+
+        return $this->secureWhere($field, $values, $operator, 'OR');
+    }
+
+    /**
+     * Adds an AND WHERE NOT IN condition to the query builder.
+     *
+     * This method strictly validates the column name to prevent SQL injection,
+     * accepting only plain alphanumeric names, optionally with dots (e.g., 'id', 'table.column').
+     * It also ensures that the provided array of values is not empty.
+     *
+     * Example usage:
+     * `$db->whereNotIn('user_id', [4, 5, 6]);`
+     * `$db->whereNotIn('status', ['archived', 'deleted']);`
+     *
+     * @param string $column The column name to check against.
+     * @param array  $values A non-empty array of scalar values to be excluded from the NOT IN clause.
+     * @return static
+     * @throws \InvalidArgumentException If the column name is invalid, the values array is empty, or contains non-scalar values.
+     */
+    public function whereNotIn(string $field, array $values): static
+    {
+        if (empty($values)) {
+            throw new \InvalidArgumentException("whereNotIn() erwartet ein nicht-leeres Array.");
+        }
+
+        $placeholders = implode(', ', array_fill(0, count($values), '?'));
+        $operator = "NOT IN ($placeholders)";
+
+        return $this->secureWhere($field, $values, $operator, 'AND');
+    }
+
+    public function OrWhereNotIn(string $field, array $values): static
+    {
+
+        if (empty($values)) {
+            throw new \InvalidArgumentException("whereNotIn() erwartet ein nicht-leeres Array.");
+        }
+
+        $placeholders = implode(', ', array_fill(0, count($values), '?'));
+        $operator = "NOT IN ($placeholders)";
+
+        return $this->secureWhere($field, $values, $operator, 'OR');
+    }
+
+    /**
+     * Adds an AND WHERE IS NULL condition to the query.
+     *
+     * This method checks if the specified column's value is NULL.
+     *
+     * Example: `$db->whereIsNull('deleted_at');`
+     * // SQL: WHERE `deleted_at` IS NULL
+     *
+     * @param string $column The column name to check. Must be a safe alphanumeric name, optionally with dots.
+     * @return static
+     * @throws \InvalidArgumentException If the column name is invalid.
+     */
+    public function whereIsNull(string $field): static
+    {
+        return $this->secureWhere($field, null, 'IS NULL', 'AND');
+    }
+    public function orWhereIsNull(string $field): static
+    {
+        return $this->secureWhere($field, null, 'IS NULL', 'OR');
+    }
+
+    /**
+     * Adds an AND WHERE IS NOT NULL condition to the query.
+     *
+     * This method checks if the specified column's value is NOT NULL.
+     *
+     * Example: `$db->whereIsNotNull('email');`
+     * // SQL: WHERE `email` IS NOT NULL
+     *
+     * @param string $column The column name to check. Must be a safe alphanumeric name, optionally with dots.
+     * @return static
+     * @throws \InvalidArgumentException If the column name is invalid.
+     */
+    public function whereIsNotNull(string $field): static
+    {
+        return $this->secureWhere($field, null, 'IS NOT NULL', 'AND');
+    }
+    public function orWhereIsNotNull(string $field): static
+    {
+        return $this->secureWhere($field, null, 'IS NOT NULL', 'OR');
+    }
+
+    /**
+     * Adds an AND WHERE EQUAL condition to the query.
+     *
+     * This is a semantic helper for simple equality checks, internally using the '=' operator.
+     *
+     * Example: `$db->whereIs('status', 'active');`
+     * // SQL: WHERE `status` = ?
+     * Example: `$db->whereIs('id', 123);`
+     * // SQL: WHERE `id` = ?
+     *
+     * @param string $column The column name to check. Must be a safe alphanumeric name, optionally with dots.
+     * @param mixed  $value  The value to compare against.
+     * @return static
+     * @throws \InvalidArgumentException If the column name is invalid.
+     */
+    public function whereIs(string $field, mixed $value): static
+    {
+        return $this->secureWhere($field, $value, '=', 'AND');
+    }
+    public function orWhereIs(string $field, mixed $value): static
+    {
+        return $this->secureWhere($field, $value, '=', 'OR');
+    }
+
+    /**
+     * Adds an AND WHERE NOT EQUAL condition to the query.
+     *
+     * This is a semantic helper for simple inequality checks, internally using the '!=' operator.
+     *
+     * Example: `$db->whereIsNot('role', 'admin');`
+     * // SQL: WHERE `role` != ?
+     *
+     * @param string $column The column name to check. Must be a safe alphanumeric name, optionally with dots.
+     * @param mixed  $value  The value to compare against.
+     * @return static
+     * @throws \InvalidArgumentException If the column name is invalid.
+     */
+    public function whereIsNot(string $field, mixed $value): static
+    {
+        return $this->secureWhere($field, $value, '!=', 'AND');
+    }
+    public function orWhereIsNot(string $field, mixed $value): static
+    {
+        return $this->secureWhere($field, $value, '!=', 'AND');
+    }
     /**
      * Store columns for ON DUPLICATE KEY UPDATE clause and optionally last insert ID.
      *
@@ -1526,9 +2045,6 @@ final class PDOdb
         $this->_updateColumns = $updateColumns;
         return $this;
     }
-
-
-
 
     /**
      * Adds a HAVING condition to the SQL query, with optional operator and logic chaining (AND/OR).
@@ -1547,52 +2063,71 @@ final class PDOdb
      *
      * @return static
      */
-    public function having(string $havingProp, mixed $havingValue = 'DBNULL', string $operator = '=', string $cond = 'AND'): static
+    public function having(string $column, mixed $value = null, string $operator = '=')
     {
-        // Backward compatibility: having(['>' => 10])
-        if (is_array($havingValue) && ($key = key($havingValue)) !== 0) {
-            $operator = (string)$key;
-            $havingValue = $havingValue[$key];
-        }
+        return $this->secureHaving($column, $value, $operator, 'AND');
+    }
 
-        // Special handling for NULL
-        if ($havingValue === 'DBNULL') {
-            $operator = 'IS';
-            $havingValue = 'NULL';
-        } elseif ($havingValue === 'DBNOTNULL') {
-            $operator = 'IS NOT';
-            $havingValue = 'NULL';
-        }
+    public function orHaving(string $column, mixed $value = null, string $operator = '=')
+    {
+        return $this->secureHaving($column, $value, $operator, 'OR');
+    }
 
-        // Validate operator (optional strict list)
-        $allowedOperators = ['=', '!=', '<>', '<', '<=', '>', '>=', 'LIKE', 'NOT LIKE', 'IS', 'IS NOT', 'IN', 'NOT IN', 'BETWEEN'];
-        if (!in_array(strtoupper($operator), $allowedOperators, true)) {
-            throw new \InvalidArgumentException("Invalid HAVING operator: $operator");
-        }
-
-        // First clause: drop condition keyword
+    protected function secureHaving(string $column, mixed $value = null, string $operator = '=', string $cond = 'AND')
+    {
         if (count($this->_having) === 0) {
             $cond = '';
         }
 
-        $this->_having[] = [$cond, $havingProp, $operator, $havingValue];
-        return $this;
-    }
-
-    /**
-     * Shortcut for a HAVING clause joined with OR.
-     *
-     * @param string $prop
-     * @param mixed  $value
-     * @param string $operator
-     * @return static
-     */
-    public function orHaving(string $prop, mixed $value = 'DBNULL', string $operator = '='): static
-    {
-        if (count($this->_having) === 0) {
-            throw new \LogicException("orHaving() cannot be used without a prior having() clause.");
+        if (is_array($value) && count($value) === 1 && is_string(key($value))) {
+            $operator = key($value);
+            $value = current($value);
         }
-        return $this->having($prop, $value, $operator, 'OR');
+
+        if ($value === null && $operator !== null && !in_array(strtoupper($operator), ['IS', 'IS NOT'])) {
+            $value = $operator;
+            $operator = '=';
+        }
+
+        if ($value === 'DBNULL') {
+            $operator = 'IS';
+            $value = null;
+        } elseif ($value === 'DBNOTNULL') {
+            $operator = 'IS NOT';
+            $value = null;
+        }
+
+        if ($value === false) {
+            throw new \InvalidArgumentException("Unsafe HAVING clause: boolean FALSE not allowed.");
+        }
+
+        if (!is_null($value)) {
+            $valueStr = is_scalar($value) ? (string) $value : 'NULL';
+
+            if (
+                !$this->isSafeColumn($column) ||
+                !$this->isAllowedOperator($operator)
+                // <- intentionally no combinedWhere-check!
+            ) {
+                throw new \InvalidArgumentException("Unsafe HAVING clause rejected: {$column} {$operator}");
+            }
+        }
+
+        if (is_null($value)) {
+            $op = strtoupper(trim($operator));
+
+            if ($op === '=' || $op === 'IS') {
+                $this->_having[] = [$cond, $column, 'IS', null];
+            } elseif ($op === '!=' || $op === 'IS NOT') {
+                $this->_having[] = [$cond, $column, 'IS NOT', null];
+            } else {
+                throw new \InvalidArgumentException("Unsupported NULL operator in HAVING: {$operator}");
+            }
+
+        }
+
+        $this->_having[] = [$cond, $column, $operator, $value];
+        return $this->_instance ?? $this;
     }
 
     /**
@@ -2252,22 +2787,6 @@ final class PDOdb
 
 
     /**
-     * Deprecated: Old internal method for dynamic mysqli result binding.
-     * Not required with PDO. Use PDO::fetchAll with desired fetch mode.
-     *
-     * @throws \LogicException always
-     */
-    protected function _dynamicBindResults($stmt)
-    {
-        throw new \LogicException('Deprecated: use PDO::fetchAll with defined fetch mode.');
-    }
-
-    protected function _buildJoinOld(): void
-    {
-        throw new \LogicException('_buildJoinOld() is deprecated and should not be used.');
-    }
-
-    /**
      * Helper method to build SQL fragments for INSERT and UPDATE statements.
      * Handles bindings, subqueries, inline expressions, and special flags.
      *
@@ -2469,13 +2988,15 @@ final class PDOdb
                     break;
 
                 default:
+                    $colExpr = $this->isSafeColumn($column) ? $column : $this->addTicks($column);
+
                     if ($value === null) {
-                        $this->_query .= ' ' . $this->addTicks($column) . " {$comparison} NULL";
+                        $this->_query .= ' ' . $colExpr . " {$comparison} NULL";
                     } elseif (is_array($value)) {
-                        $this->_query .= ' ' . $this->addTicks($column) . " {$comparison}" . str_repeat(' ?,', count($value) - 1) . ' ?';
+                        $this->_query .= ' ' . $colExpr . " {$comparison}" . str_repeat(' ?,', count($value) - 1) . ' ?';
                         $this->_bindParams($value);
                     } else {
-                        $this->_query .= ' ' . $this->addTicks($column) . $this->_buildPair($comparison, $value);
+                        $this->_query .= ' ' . $colExpr . $this->_buildPair($comparison, $value);
                     }
                     break;
             }
@@ -3362,7 +3883,7 @@ final class PDOdb
 
     }
 
-    protected function handleException(\Throwable $e, string $context = ''): false
+    protected function handleException(\Throwable $e, string $context = ''): bool
     {
         $this->_stmtError = $e->getMessage();
         $this->_stmtErrno = $e->getCode();
@@ -3404,34 +3925,6 @@ final class PDOdb
 
         // Sicherer Rückgabewert: ggf. wieder zusammensetzen
         return $alias ? "{$name} {$alias}" : $name;
-    }
-    protected function _validateTableName_org(string $tableName): string
-    {
-        // Entferne mögliche Backticks/Anführungszeichen am Anfang/Ende, falls diese vom Nutzer mitgegeben werden
-        $tableName = trim($tableName, "`'\"");
-
-        // Prüfe auf ungültige Zeichen
-        // Erlaubt sind: Buchstaben (a-z, A-Z), Zahlen (0-9), Unterstrich (_)
-        // Andere Zeichen wie Punkte (.), Leerzeichen, Anführungszeichen, Sonderzeichen etc. sind NICHT erlaubt.
-        // Ein Punkt ist nur erlaubt, wenn es sich um "datenbank.tabelle" handelt (siehe unten)
-        if (!preg_match('/^[a-zA-Z0-9_]+(\.[a-zA-Z0-9_]+){0,2}$/', $tableName)) {
-            throw new \InvalidArgumentException("Invalid characters found in table name: '{$tableName}'. Only alphanumeric characters and underscores are allowed, optionally with up to two dots for database.schema.table.");
-        }
-
-        // Zusätzliche Prüfung für "datenbank.tabelle" (max. 2 Punkte für db.schema.table oder db.table)
-        $parts = explode('.', $tableName);
-        if (count($parts) > 3) { // Max database.schema.table
-            throw new \InvalidArgumentException("Invalid table name format: '{$tableName}'. Too many dots.");
-        }
-        foreach ($parts as $part) {
-            if (!preg_match('/^[a-zA-Z0-9_]+$/', $part)) {
-                // This check is actually redundant if the main regex is strong enough,
-                // but good for explicit clarity if the main regex is simplified.
-                throw new \InvalidArgumentException("Invalid characters in table name part: '{$part}'.");
-            }
-        }
-
-        return $tableName;
     }
 
 }
