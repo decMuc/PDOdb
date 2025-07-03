@@ -687,7 +687,31 @@ This helps keep your code clean and readable when building dynamic conditions.
 
 ## Where Conditions
 
-To build flexible `WHERE` clauses, you can use the `where()` method. It supports a variety of use cases:
+For a 1:1 migration of the old `where()` conditions from the ThingEngineer MySQLi class, you can continue to use the familiar methods.
+They have been improved and largely remain compatible but do not provide 100% protection against SQL injection — especially in cases like:
+```php
+id = 1); DROP TABLE users --
+```
+Since MySQL often parses integer columns by extracting the leading numeric value (e.g., 1 from 1); DROP...), such injections may silently pass through.
+
+**Recommendation**
+
+We recommend using the new, typed where* methods which offer enhanced security, such as:
+
+- `whereInt()` — safe integer filtering
+
+- `whereString()` — validated string values
+
+- `whereDate()` — validated date input
+
+- `whereIsNull()` / `whereIsNotNull()` — explicit NULL checks
+
+- `whereBool()` — strictly typed boolean values
+
+- `whereIn()` / `whereNotIn()` — safe set membership checks
+
+These methods prevent common attack vectors by enforcing strict type checks and ensure that malicious input cannot be converted into dangerous SQL commands.
+
 
 **Simple equality check:**
 
@@ -750,7 +774,206 @@ This will generate:
 WHERE (type = 'admin' OR type = 'editor') AND active = 1
 ```
 
-> ✅ All values are automatically parameterized — no need to worry about escaping or injection.
+**Warning about old `where()` methods**
+
+>⚠️ Warning: The legacy where() methods (compatible with ThingEngineer MySQLi) are not 100% secure. They rely on parameterization but lack strict type enforcement, allowing edge cases like id = 1); DROP TABLE users -- to bypass protections because MySQL interprets the initial numeric part and ignores the rest.
+
+**Secure typed `where*()` methods**
+
+>✅ All the following typed where*() methods implement strict type validation and proper parameter binding, greatly reducing the risk of SQL injection. They should be preferred for all new code and migration efforts:
+
+**NEW `whereInt()` and `orWhereInt()`**
+These methods enable safe and type-checked integer filtering in your SQL WHERE clauses.
+```php
+// Find user with id = 42
+$db->whereInt('id', 42);
+$user = $db->getOne('users');
+
+// Find users with id = 42 or id = 99
+$db->whereInt('id', 42)
+   ->orWhereInt('id', 99);
+$users = $db->get('users');
+```
+**What `whereInt()` blocks**
+`whereInt()` blocks any non-integer or malformed input to prevent injection and invalid queries.
+```php
+// Valid usage — allowed
+$db->whereInt('id', 123);
+
+// Invalid usage — throws exception or blocks
+$db->whereInt('id', '123abc');    // Non-pure integer string
+$db->whereInt('id', '1 OR 1=1');  // Injection attempt
+$db->whereInt('id', 'DROP TABLE'); // Injection attempt
+```
+In these cases, `whereInt()` will raise an error or reject the input, preventing unsafe SQL from being executed.
+
+**NEW `whereString()` and `orWhereString()`**
+These methods enable safe and type-checked string filtering in your SQL WHERE clauses.
+
+```php
+// Find user with username 'john_doe'
+$db->whereString('username', 'john_doe');
+$user = $db->getOne('users');
+
+// Find users with username 'john_doe' or 'jane_smith'
+$db->whereString('username', 'john_doe')
+->orWhereString('username', 'jane_smith');
+$users = $db->get('users');
+```
+**What `whereString()` blocks**
+
+`whereString()` blocks any input containing invalid characters or potential injection payloads.
+
+```php
+// Valid usage — allowed
+$db->whereString('username', 'valid_user');
+
+// Invalid usage — throws exception or blocks
+$db->whereString('username', "john'; DROP TABLE users; --");  // Injection attempt
+$db->whereString('username', "admin OR 1=1");                 // Injection attempt
+```
+In these cases, `whereString()` will raise an error or reject the input, preventing unsafe SQL from being executed.
+
+**NEW `whereDate()` and `orWhereDate()`**
+These methods enable safe and validated date filtering in your SQL WHERE clauses.
+
+```php
+// Find users created on 2025-07-01
+$db->whereDate('created_at', '2025-07-01');
+$user = $db->getOne('users');
+
+// Find users created on 2025-07-01 or 2025-07-02
+$db->whereDate('created_at', '2025-07-01')
+->orWhereDate('created_at', '2025-07-02');
+$users = $db->get('users');
+```
+**What `whereDate()` blocks**
+
+`whereDate()` blocks any input that is not a valid date or datetime string.
+
+```php
+// Valid usage — allowed
+$db->whereDate('created_at', '2025-07-01');
+
+// Invalid usage — throws exception or blocks
+$db->whereDate('created_at', '2025-07-01; DROP TABLE users'); // Injection attempt
+$db->whereDate('created_at', 'invalid-date');                 // Invalid format
+```
+In these cases, `whereDate()` will raise an error or reject the input, preventing unsafe SQL from being executed.
+
+**NEW `whereBool()` and `orWhereBool()`**
+These methods enable safe and strictly typed boolean filtering in your SQL WHERE clauses.
+
+```php
+// Find active users
+$db->whereBool('is_active', true);
+$users = $db->get('users');
+
+// Find inactive or banned users
+$db->whereBool('is_active', false)
+->orWhereBool('is_banned', true);
+$users = $db->get('users');
+```
+**What `whereBool()` blocks**
+
+`whereBool()` blocks any input that is not strictly boolean or convertible to 0 or 1.
+
+```php
+// Valid usage — allowed
+$db->whereBool('is_active', true);
+$db->whereBool('is_active', 0);
+
+// Invalid usage — throws exception or blocks
+$db->whereBool('is_active', 'yes');   // Invalid boolean
+$db->whereBool('is_active', '1 OR 1=1'); // Injection attempt
+```
+In these cases, `whereBool()` will raise an error or reject the input, preventing unsafe SQL from being executed.
+
+**NEW `whereIn()` and `orWhereIn()`**
+These methods enable safe and parameterized filtering by sets in your SQL WHERE clauses.
+
+```php
+// Find users with ids in 1, 2, 3
+$db->whereIn('id', [1, 2, 3]);
+$users = $db->get('users');
+
+// Find users with status in 'active' or 'pending'
+$db->whereIn('status', ['active', 'pending'])
+->orWhereIn('status', ['banned', 'suspended']);
+$users = $db->get('users');
+```
+**What `whereIn()` blocks**
+
+`whereIn()` blocks empty arrays and ensures all values are safely bound as parameters, preventing injection.
+
+```php
+// Valid usage — allowed
+$db->whereIn('id', [1, 2, 3]);
+
+// Invalid usage — throws exception or blocks
+$db->whereIn('id', []);                // Empty array
+$db->whereIn('id', ['1; DROP TABLE']); // Injection attempt if unescaped (blocked here)
+```
+In these cases, `whereIn()` will raise an error or reject the input, preventing unsafe SQL from being executed.
+
+**NEW `whereNotIn()` and `orWhereNotIn()`**
+
+These methods enable safe and parameterized exclusion filtering by sets in your SQL WHERE clauses.
+
+```php
+// Exclude users with ids 10, 20, 30
+$db->whereNotIn('id', [10, 20, 30]);
+$users = $db->get('users');
+
+// Exclude users with status 'inactive' or 'banned'
+$db->whereNotIn('status', ['inactive', 'banned'])
+->orWhereNotIn('status', ['pending']);
+$users = $db->get('users');
+```
+**What `whereNotIn()` blocks**
+
+`whereNotIn()` blocks empty arrays and ensures all values are safely bound as parameters, preventing injection.
+
+```php
+// Valid usage — allowed
+$db->whereNotIn('id', [10, 20, 30]);
+
+// Invalid usage — throws exception or blocks
+$db->whereNotIn('id', []);             // Empty array
+$db->whereNotIn('id', ['DROP TABLE']); // Injection attempt if unescaped (blocked here)
+```
+In these cases, `whereNotIn()` will raise an error or reject the input, preventing unsafe SQL from being executed.
+
+**NEW `whereIsNull()` and `orWhereIsNull()`**
+These methods allow you to filter records where a specific column is NULL.
+
+```php
+// Users without a phone number
+$db->whereIsNull('phone');
+$users = $db->get('users');
+
+// OR-condition with NULL check
+$db->where('email', 'test@example.com')
+->orWhereIsNull('email');
+$users = $db->get('users');
+```
+**NEW `whereIsNotNull()` and `orWhereIsNotNull()`**
+These methods filter records where a column is NOT NULL.
+
+```php
+// Users with a password set
+$db->whereIsNotNull('password');
+$users = $db->get('users');
+
+// OR-condition combined
+$db->where('active', 1)
+->orWhereIsNotNull('last_login');
+$users = $db->get('users');
+```
+>Notes: `whereIsNull()`,`orWhereIsNull()`,`whereIsNotNull()` and `orWhereIsNotNull()`
+> - These methods do not accept a value argument – they simply append IS NULL or IS NOT NULL to the WHERE clause.
+> - Works with all SQL-capable fields, including strings, numbers, and dates.
+> - Safe to combine with other `where*()` and orWhere*() methods.
 
 ## Sanitization: `$db->escape()`
 

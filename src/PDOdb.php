@@ -1681,6 +1681,55 @@ final class PDOdb
     }
 
     /**
+     * Add a strict boolean condition to the WHERE clause using AND logic.
+     *
+     * Only accepts true, false, 1 or 0. All other values will throw an exception.
+     * Internally casts the value to 1 or 0 and uses a prepared statement.
+     *
+     * Example:
+     *   $db->whereBool('active', true);
+     *
+     * @param string $column   The column name to filter.
+     * @param mixed  $value    Must be true, false, 1 or 0 (strict check).
+     * @param string $operator Optional SQL operator (= or !=). Default is '='.
+     *
+     * @return static
+     * @throws \InvalidArgumentException If the value is not strictly boolean.
+     */
+    public function whereBool(string $column, mixed $value, string $operator = '='): static
+    {
+        if (!in_array($value, [true, false, 1, 0], true)) {
+            throw new \InvalidArgumentException("Invalid boolean value for column '{$column}'.");
+        }
+
+        return $this->secureWhere($column, (bool)$value ? 1 : 0, $operator, 'AND');
+    }
+    /**
+     * Add a strict boolean condition to the WHERE clause using OR logic.
+     *
+     * Only accepts true, false, 1 or 0. All other values will throw an exception.
+     * Internally casts the value to 1 or 0 and uses a prepared statement.
+     *
+     * Example:
+     *   $db->orWhereBool('active', false);
+     *
+     * @param string $column   The column name to filter.
+     * @param mixed  $value    Must be true, false, 1 or 0 (strict check).
+     * @param string $operator Optional SQL operator (= or !=). Default is '='.
+     *
+     * @return static
+     * @throws \InvalidArgumentException If the value is not strictly boolean.
+     */
+    public function orWhereBool(string $column, mixed $value, string $operator = '='): static
+    {
+        if (!in_array($value, [true, false, 1, 0], true)) {
+            throw new \InvalidArgumentException("Invalid boolean value for column '{$column}'.");
+        }
+
+        return $this->secureWhere($column, (bool)$value ? 1 : 0, $operator, 'OR');
+    }
+
+    /**
      * Adds a WHERE condition with safe string handling.
      *
      * Ensures the value is a scalar and safely castable to string.
