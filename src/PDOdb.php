@@ -2696,6 +2696,11 @@ final class PDOdb
 
             return;
         }
+        // IS NULL|IS NOT NULL
+        if (preg_match('/^[\w\.\'"]+\s+IS(\s+NOT)?\s+NULL$/i', $expr)) {
+            return;
+        }
+
         if (preg_match('/^[\w\.\'"]+\s*(=|<>|!=|<|>|<=|>=)\s*[\w\.\'"]+$/', $expr)) {
             return;
         }
