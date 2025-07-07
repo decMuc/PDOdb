@@ -8,22 +8,17 @@
  * @copyright Copyright (c) 2025 Lucky Fischer
  * @license   https://opensource.org/licenses/MIT MIT License
  * @link      https://github.com/decMuc/PDOdb
- * @version   1.2.1
+ * @version   1.2.2
  * @inspired-by https://github.com/ThingEngineer/PHP-MySQLi-Database-Class
  */
 
 
-namespace decMuc\PDOdb;
+namespace App\System\Database;
 
 final class PDOdb
 {
-    /**
-     * Static instance for singleton usage.
-     *
-     * @var self
-     */
-    protected static $_instance;
-
+    protected static ?string $_activeInstanceName = 'default';
+    protected static array $_instances = [];
 
     /**
      * Table prefix for all queries.
@@ -316,9 +311,10 @@ final class PDOdb
         $username = null,
         $password = null,
         $db = null,
-        $port = null,
+        $port = 3306,
         $charset = 'utf8mb4',
-        $socket = null
+        $socket = null,
+        $instance = 'default'
     ) {
         $isSubQuery = false;
 
@@ -327,9 +323,10 @@ final class PDOdb
                 $$key = $val;
             }
         }
-
+        $this->defConnectionName       = $instance;
+        self::$_activeInstanceName     = $instance;
         // addConnection wird IMMER aufgerufen – auch bei SubQuery
-        $this->addConnection('default', [
+        $this->addConnection($instance, [
             'host'     => $host,
             'username' => $username,
             'password' => $password,
@@ -349,7 +346,7 @@ final class PDOdb
             $this->setPrefix($prefix);
         }
 
-        self::$_instance = $this;
+        self::$_instances[$instance] = $this;
     }
 
     /**
@@ -541,9 +538,9 @@ final class PDOdb
      *
      * @return self|null The last initialized instance or null if none exists
      */
-    public static function getInstance(): ?self
+    public static function getInstance(?string $name = null): ?self
     {
-        return self::$_instance;
+        return self::$_instances[$name ?? 'default'] ?? null;
     }
 
     /**
@@ -587,7 +584,7 @@ final class PDOdb
         $this->_stmtErrno = null;
 
         if (!$this->_transaction_in_progress) {
-            $this->defConnectionName = 'default';
+            $this->defConnectionName = self::$_activeInstanceName;
         }
 
         $this->autoReconnectCount = 0;
@@ -1513,7 +1510,7 @@ final class PDOdb
             }
 
             $this->_where[] = [$cond, $column, $operator, $value];
-            return $this->_instance ?? $this;
+            return $this;
         }
 
 
@@ -1539,7 +1536,7 @@ final class PDOdb
                 throw new \InvalidArgumentException("Unsupported NULL comparison operator: {$operator}");
             }
 
-            return $this->_instance ?? $this;
+            return $this;
         }
 
         if (
@@ -1547,7 +1544,7 @@ final class PDOdb
             (isset($value['[F]']) || isset($value['[I]']) || isset($value['[N]']))
         ) {
             $this->_where[] = [$cond, $column, $operator, $value];
-            return $this->_instance ?? $this;
+            return $this;
         }
 
         if (is_array($value)) {
@@ -1562,7 +1559,7 @@ final class PDOdb
 
         $this->_where[] = [$cond, $column, $operator, $value];
 
-        return $this->_instance ?? $this;
+        return $this;
     }
 
     public function __toString(): string
@@ -3910,11 +3907,12 @@ final class PDOdb
      * @param string $subQueryAlias Alias name for the subquery (optional)
      * @return self Instance configured as subquery
      */
-    public static function subQuery(string $subQueryAlias = ''): self
+    public function subQuery(string $subQueryAlias = ''): self
     {
         return new self([
             'host'       => $subQueryAlias,
             'isSubQuery' => true,
+            'instanz'    => $this->defConnectionName,
         ]);
     }
 

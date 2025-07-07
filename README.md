@@ -168,6 +168,7 @@ $db = new PDOdb('localhost', 'root', 'secret', 'my_database');
 **Example 2:** Initialization with Config Array
 
 ```php
+// create a default instance
 $db = new PDOdb([
     'host'     => 'localhost',
     'username' => 'root',
@@ -176,6 +177,21 @@ $db = new PDOdb([
     'port'     => 3306,
     'charset'  => 'utf8mb4'
 ]);
+
+// creates a named instance
+$db2 = new PDOdb([
+    'host'     => 'localhost',
+    'username' => 'root',
+    'password' => 'secret',
+    'db'       => 'my_database',
+    'port'     => 3306,
+    'charset'  => 'utf8mb4',
+    'instance' => 'customer'
+]);
+
+// Retrieve active or named instance:
+$db    = PDOdb::getInstance();              // returns last active default
+$db2   = PDOdb::getInstance('customer');        // explicitly retrieve 'customer'
 ```
 
 **Example 3:** Using an existing PDO instance
@@ -260,7 +276,8 @@ class CustDB
         string $password,
         string $dbName,
         int $port = 3306,
-        string $charset = 'utf8mb4'
+        string $charset = 'utf8mb4',
+        string $instance = 'customer'
     ): PDOdb {
         return new PDOdb([
             'host'     => $host,
@@ -269,6 +286,7 @@ class CustDB
             'db'       => $dbName,
             'port'     => $port,
             'charset'  => $charset,
+            'instance' => $instance // important!! without you got the last default
         ]);
     }
 }
