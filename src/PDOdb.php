@@ -13,7 +13,7 @@
  */
 
 
-namespace App\System\Database;
+namespace decMuc\PDOdb;
 
 final class PDOdb
 {
