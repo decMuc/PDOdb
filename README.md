@@ -1,4 +1,4 @@
-# PDOdb – A Modern PDO-Based Drop-In Replacement for ThingEngineer's MysqliDb
+# PDOdb – Modern PDO MySQL Database Class for PHP 8+
 
 [![PHP Version](https://img.shields.io/badge/php-%3E=8.0-blue)](https://www.php.net/manual/en/migration80.php)
 [![License](https://poser.pugx.org/decmuc/pdodb/license)](https://packagist.org/packages/decmuc/pdodb)
