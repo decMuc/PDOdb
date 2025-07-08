@@ -1,8 +1,13 @@
 # PDOdb – A Modern PDO-Based Drop-In Replacement for ThingEngineer's MysqliDb
 
+[![PHP Version](https://img.shields.io/badge/php-%3E=8.0-blue)](https://www.php.net/manual/en/migration80.php)
+[![License](https://poser.pugx.org/decmuc/pdodb/license)](https://packagist.org/packages/decmuc/pdodb)
+[![Composer Ready](https://img.shields.io/badge/Composer-ready-blueviolet)](https://packagist.org/packages/decmuc/pdodb)
+[![Latest Stable Version](https://poser.pugx.org/decmuc/pdodb/v/stable)](https://packagist.org/packages/decmuc/pdodb)
+
 **PDOdb** is a modern, secure, and fully compatible rewrite of the popular and awesome  [PHP-MySQLi-Database-Class by ThingEngineer](https://github.com/ThingEngineer/PHP-MySQLi-Database-Class) – designed as a direct replacement but built entirely on PHP’s native PDO extension.
 
-The goal of this project is to provide a **1:1 logic-compatible** alternative to the original class, allowing existing projects to migrate seamlessly to a safer, cleaner, and future-proof implementation – without rewriting business logic or adjusting method calls.
+The goal of this project is to provide a **close to 1:1** logic-compatible alternative to the original class, allowing existing projects to migrate seamlessly to a safer, cleaner, and future-proof implementation – without rewriting business logic or adjusting method calls in most cases, except for a few legacy features that were intentionally dropped due to security, portability, or PDO-incompatibility.
 
 ## Why switch from the original?
 
@@ -540,53 +545,51 @@ foreach ($logins as $login) {
     echo "Login: $login\n";
 }
 ```
-## Insert Data (experimental)
-You can also load .CSV data directly into a table using the loadData() method.
-Load CSV into a table
-```php
-$path_to_file = "/home/john/file.csv";
-$db->loadData("users", $path_to_file);
-```
 
-This will attempt to load a CSV file named file.csv from the given path into the table users.
 
-Optional settings
-You can fine-tune the import using an optional settings array:
-```php
-$options = [
-    "fieldChar"     => ';',
-    "lineChar"      => '\r\n',
-    "linesToIgnore" => 1,
-    "loadDataLocal" => true
-];
+## Insert Data
+## ❌ Legacy: loadData() and loadXml() \[Removed]
 
-$db->loadData("users", "/home/john/file.csv", $options);
-// Executes LOAD DATA LOCAL INFILE ...
-```
-⚠️ Warning:
-This feature is currently marked as experimental.
-It has not yet been tested in production environments and may depend on your MySQL server configuration (e.g., secure_file_priv, local_infile settings).
+These two methods were part of the original ThingEngineer MySQLi wrapper and allowed direct file imports via:
 
-Use with care – or just wait until someone says "Hey, this doesn't work!" 😄
-
-## Insert XML
-You can also import structured XML data directly into a table using the loadXML() method.
+* `LOAD DATA INFILE` (CSV import)
+* `LOAD XML INFILE` (XML import)
 
 ```php
-$path_to_file = "/home/john/file.xml";
-$db->loadXML("users", $path_to_file);
+$db->loadData("users", "/path/to/file.csv");
+$db->loadXml("users", "/path/to/file.xml");
 ```
-Optional parameters can be passed as an associative array:
+**⚠️ Why were they removed?**
+
+* They rely on non-portable SQL features that bypass PDO
+
+* They require special MySQL privileges (FILE, local_infile, etc.)
+
+* They are incompatible with prepared statements and the security model of PDO
+
+* They caused inconsistent behavior on shared hosting or managed environments
+
+**✅ Alternative**
+
+If you need to import CSV or XML data:
+
+Use standard PHP functions (fgetcsv(), XMLReader, etc.)
+
+Insert using `$db->insert()` or `$db->insertMulti()` with prepared data
+
+
 ```php
-$options = [
-    'linesToIgnore' => 0,       // Number of lines to skip at the beginning
-    'rowTag'        => '<user>' // XML tag that marks the start of each dataset
-];
-$db->loadXML("users", $path_to_file, $options);
+if (($fp = fopen('users.csv', 'r')) !== false) {
+    while (($row = fgetcsv($fp, 0, ';')) !== false) {
+        $db->insert('users', [
+            'name' => $row[0],
+            'email' => $row[1],
+            // ...
+        ]);
+    }
+    fclose($fp);
+}
 ```
-Note:
-This method is not yet fully tested and may require database-specific configurations (e.g. LOAD XML permissions or secure-file-priv settings in MySQL).
-Use with caution or wait for confirmed stable support. 🚧
 
 ## Pagination
 Use `paginate()` instead of `get()` to automatically handle page-based results.

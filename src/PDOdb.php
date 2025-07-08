@@ -8,7 +8,7 @@
  * @copyright Copyright (c) 2025 Lucky Fischer
  * @license   https://opensource.org/licenses/MIT MIT License
  * @link      https://github.com/decMuc/PDOdb
- * @version   1.2.2
+ * @version   1.3.0
  * @inspired-by https://github.com/ThingEngineer/PHP-MySQLi-Database-Class
  */
 
@@ -2429,137 +2429,6 @@ final class PDOdb
         }
 
         return implode('.', $parts);
-    }
-
-    /**
-     * Imports raw CSV data into a database table using LOAD DATA INFILE.
-     *
-     * @param string     $importTable    The database table to import data into.
-     * @param string     $importFile     The file path to the CSV file.
-     * @param array|null $importSettings Optional import settings:
-     *                                   - fieldChar: field delimiter (default ';')
-     *                                   - lineChar: line delimiter (default PHP_EOL)
-     *                                   - linesToIgnore: number of lines to skip (default 1)
-     *                                   - fieldEnclosure: optional enclosure character (e.g. '"')
-     *                                   - lineStarting: optional line start delimiter
-     *                                   - loadDataLocal: bool, whether to use LOCAL keyword
-     *
-     * @return bool True on successful import, false on failure.
-     * @throws \Exception If the file does not exist or on query errors.
-     */
-    public function loadData(string $importTable, string $importFile, ?array $importSettings = null): bool
-    {
-        // Verify file existence
-        if (!file_exists($importFile)) {
-            throw new \Exception("Import file '{$importFile}' does not exist.");
-        }
-
-        // Default import settings
-        $settings = [
-            'fieldChar'      => ';',
-            'lineChar'       => PHP_EOL,
-            'linesToIgnore'  => 1,
-        ];
-
-        // Merge user settings if provided
-        if (is_array($importSettings)) {
-            $settings = array_merge($settings, $importSettings);
-        }
-
-        $prefix = $this->prefix ?? '';
-        $table = $prefix . $importTable;
-
-        // Escape backslashes in file path for SQL syntax
-        $escapedImportFile = str_replace("\\", "\\\\", $importFile);
-
-        // Use LOCAL keyword if requested
-        $loadDataLocal = !empty($settings['loadDataLocal']) ? 'LOCAL' : '';
-
-        // Build the LOAD DATA SQL statement
-        $sql = sprintf(
-            "LOAD DATA %s INFILE '%s' INTO TABLE %s FIELDS TERMINATED BY '%s'",
-            $loadDataLocal,
-            $escapedImportFile,
-            $table,
-            $settings['fieldChar']
-        );
-
-        if (!empty($settings['fieldEnclosure'])) {
-            $sql .= " ENCLOSED BY '" . $settings['fieldEnclosure'] . "'";
-        }
-
-        $sql .= " LINES TERMINATED BY '" . $settings['lineChar'] . "'";
-
-        if (!empty($settings['lineStarting'])) {
-            $sql .= " STARTING BY '" . $settings['lineStarting'] . "'";
-        }
-
-        $sql .= " IGNORE " . (int)$settings['linesToIgnore'] . " LINES";
-
-        // Execute the query with error handling
-        try {
-            $result = $this->queryUnprepared($sql);
-            return (bool)$result;
-        } catch (\Exception $e) {
-            // Optional: log error here if needed
-            // error_log("LoadData error: " . $e->getMessage());
-            throw $e;
-        }
-    }
-
-    /**
-     * Imports XML data into a database table using LOAD XML INFILE.
-     *
-     * @param string     $importTable    The table into which data will be imported.
-     * @param string     $importFile     The XML file path.
-     * @param array|null $importSettings Optional settings:
-     *                                   - linesToIgnore: int, lines to skip (default 0)
-     *                                   - rowTag: string, the XML row tag identifier
-     *
-     * @return bool True on successful import, false otherwise.
-     * @throws \Exception If the import file does not exist or on query errors.
-     */
-    public function loadXml(string $importTable, string $importFile, ?array $importSettings = null): bool
-    {
-        // Check if the import file exists
-        if (!file_exists($importFile)) {
-            throw new \Exception("loadXml: Import file '{$importFile}' does not exist.");
-        }
-
-        // Default settings
-        $settings = [
-            'linesToIgnore' => 0,
-        ];
-
-        // Merge user settings if provided
-        if (is_array($importSettings)) {
-            $settings = array_merge($settings, $importSettings);
-        }
-
-        $prefix = $this->prefix ?? '';
-        $table = $prefix . $importTable;
-
-        // Escape backslashes for SQL compatibility
-        $escapedImportFile = str_replace("\\", "\\\\", $importFile);
-
-        // Build LOAD XML query
-        $sql = sprintf("LOAD XML INFILE '%s' INTO TABLE %s", $escapedImportFile, $table);
-
-        if (!empty($settings['rowTag'])) {
-            $sql .= " ROWS IDENTIFIED BY '" . $settings['rowTag'] . "'";
-        }
-
-        $sql .= " IGNORE " . (int)$settings['linesToIgnore'] . " LINES";
-
-        // Execute unprepared statement with error handling
-        try {
-            $result = $this->queryUnprepared($sql);
-            return (bool)$result;
-        } catch (\Exception $e) {
-            // Optional: log error here
-            // error_log("loadXml error: " . $e->getMessage());
-            throw $e;
-        }
     }
 
     /**

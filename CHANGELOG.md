@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
+[1.3.0] – 2025-07-08
+### Added
+Default instance name `$instance = 'default'` added to simplify multi-instance management.
+This ensures consistent fallback behavior if no named instance is specified.
+
+### Removed
+Removed legacy methods `loadData()` and `loadXml()`.
+
+These were inherited from the original MySQLi-based implementation (ThingEngineer),
+but rely on `LOAD DATA INFILE` and `LOAD XML INFILE`, which are insecure, non-portable,
+and fundamentally incompatible with a PDO-based database wrapper.
+
+Developers should use native PHP CSV/XML parsing with prepared INSERT statements instead.
+
 ## [1.2.0] – 2025-07-03
 
 ### Added
