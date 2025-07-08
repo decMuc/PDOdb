@@ -17,8 +17,8 @@ While the original MysqliDb class was a great utility for many years, it is no l
 
 ## 🔑 Key Features
 
-- ✅ **Fully compatible with ThingEngineer’s MysqliDb**
-  Same method names, same behavior – just safer and more modern under the hood.
+- 🔄 ThingEngineer-inspired API
+  Familiar method names and structure, modernized for PDO and security. Some legacy features were dropped intentionally.
 
 - 🔐 **Built on native PDO** 
   Replaces `mysqli_*` with secure and flexible PDO, using real prepared statements.
@@ -68,8 +68,8 @@ While the original MysqliDb class was a great utility for many years, it is no l
 - [Update Query](#update-query)
 - [Select Query](#select-query)
 - [Delete Query](#delete-query)
-- [Insert Data (experimental)](#insert-data-experimental)
-- [Insert XML (experimental)](#insert-xml-experimental)
+- [Insert Data](#insert-data)
+- [Insert XML](#insert-xml)
 - [Pagination](#pagination)
 - [Raw Queries](#raw-queries)
 - [Query Keywords](#query-keywords)
