@@ -3,7 +3,7 @@
 [![PHP Version](https://img.shields.io/badge/php-%3E=8.0-blue)](https://www.php.net/manual/en/migration80.php)
 [![License](https://poser.pugx.org/decmuc/pdodb/license)](https://packagist.org/packages/decmuc/pdodb)
 [![Composer Ready](https://img.shields.io/badge/Composer-ready-blueviolet)](https://packagist.org/packages/decmuc/pdodb)
-[![Latest Stable Version](https://poser.pugx.org/decmuc/pdodb/v/stable)](https://packagist.org/packages/decmuc/pdodb)
+[![Packagist Version](https://img.shields.io/packagist/v/decmuc/pdodb.svg)](https://packagist.org/packages/decmuc/pdodb)
 
 **PDOdb** is a modern, secure, and fully compatible rewrite of the popular and awesome  [PHP-MySQLi-Database-Class by ThingEngineer](https://github.com/ThingEngineer/PHP-MySQLi-Database-Class) – designed as a direct replacement but built entirely on PHP’s native PDO extension.
 
