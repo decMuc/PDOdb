@@ -3880,6 +3880,16 @@ final class PDOdb
         $this->_secureSanitizeWhere($this->_where);
         $this->_buildCondition('WHERE', $this->_where);
         $this->_buildGroupBy();
+
+        if (!empty($this->_pendingHaving)) {
+            if (empty($this->_selectAliases)) {
+                $selectClause = $this->_extractSelectClause($this->_query);
+                $this->_selectAliases = $this->_extractAliasesFromSelect($selectClause);
+            }
+            $this->_secureSanitizeHaving($this->_pendingHaving, $this->_selectAliases);
+            $this->_pendingHaving = [];
+        }
+
         $this->_buildCondition('HAVING', $this->_having);
         $this->_buildOrderBy();
         $this->_buildLimit($numRows);
@@ -4000,6 +4010,13 @@ final class PDOdb
         $this->_bindParams = $newParams;
     }
 
+    protected function _extractSelectClause(string $query): string
+    {
+        if (preg_match('/SELECT\s+(.*?)\s+FROM\s/i', $query, $m)) {
+            return $m[1];
+        }
+        return '*';
+    }
     protected function _extractAliasesFromSelect(string|array $columns): array
     {
         $aliases = [];
