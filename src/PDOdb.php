@@ -8,15 +8,34 @@
  * @copyright Copyright (c) 2025 Lucky Fischer
  * @license   https://opensource.org/licenses/MIT MIT License
  * @link      https://github.com/decMuc/PDOdb
- * @version   1.3.2
+ * @version   1.3.3
  * @inspired-by https://github.com/ThingEngineer/PHP-MySQLi-Database-Class
  */
 
 
 namespace decMuc\PDOdb;
 
+/**
+ * Enables heuristic evaluation of suspicious WHERE values.
+ *
+ * When FALSE (default):
+ *   → Values like "1; DROP TABLE x" or "1' OR 1=1" are immediately flagged
+ *     as dangerous and blocked (exception thrown, query not executed).
+ *
+ * When TRUE:
+ *   → Suspicious values are initially allowed, then checked against the
+ *     column's expected data type (e.g., INT, VARCHAR).
+ *     If a mismatch or clear injection attempt is detected, the query is blocked.
+ *
+ * Note: Setting this to TRUE introduces a small performance overhead,
+ *       as column definitions may need to be retrieved via `getColumnMeta()`.
+ */
+define('PDOdb_HEURISTIC_WHERE_CHECK', false);
 final class PDOdb
 {
+
+
+
     protected static ?string $_activeInstanceName = 'default';
     protected static array $_instances = [];
 
@@ -322,6 +341,8 @@ final class PDOdb
      * @var array<string, array<string, string>>
      */
     protected array $_columnCache = [];
+
+    protected string $_lastDebugQuery;
 
     public function __construct(
         $host = null,
@@ -731,8 +752,6 @@ final class PDOdb
         return $this->_stmtErrno ?? 0;
     }
 
-
-
     /**
      * Returns the ID of the last inserted item.
      *
@@ -747,8 +766,6 @@ final class PDOdb
             return $this->handleException($e, 'getInsertID');
         }
     }
-
-
 
     /**
      * Checks whether this instance represents a subquery context.
@@ -1140,29 +1157,43 @@ final class PDOdb
     {
         $prefix = $this->prefix ?? '';
         $this->_query = "LOCK TABLES ";
+        $this->_tableLocks = [];
+
+        $parts = [];
 
         if (is_array($table)) {
-            $parts = [];
             foreach ($table as $value) {
-                if (is_string($value)) {
-                    try {
-                        $validated = $this->_secureValidateTable($value);
-                        $parts[] = $prefix . $validated . ' ' . $this->_tableLockMethod;
-                    } catch (\Throwable $e) {
-                        $this->logException($e, "lock [table={$value}]");
-                        throw $e;
-                    }
+                if (!is_string($value)) {
+                    continue; // Nur Strings zulassen
+                }
+
+                try {
+                    $validated = $this->_secureValidateTable($value);
+                    $parts[] = $prefix . $validated . ' ' . $this->_tableLockMethod;
+                    $this->_tableLocks[] = $validated;
+                } catch (\Throwable $e) {
+                    $this->_unlockOnFailure();
+                    $this->_beforeReset();
+                    $this->logException($e, "lock [table={$value}]");
+                    throw $e;
                 }
             }
-            $this->_query .= implode(', ', $parts);
         } else {
             try {
                 $validated = $this->_secureValidateTable($table);
                 $this->_query .= $prefix . $validated . ' ' . $this->_tableLockMethod;
+                $this->_tableLocks[] = $validated;
             } catch (\Throwable $e) {
+                $this->_unlockOnFailure();
+                $this->_beforeReset();
                 $this->logException($e, "lock [table={$table}]");
                 throw $e;
             }
+        }
+
+        // Falls es ein Array war, muss das Query hier zusammengesetzt werden
+        if (!empty($parts)) {
+            $this->_query .= implode(', ', $parts);
         }
 
         try {
@@ -1170,11 +1201,24 @@ final class PDOdb
             $this->reset();
             return (bool)$result;
         } catch (\Throwable $e) {
+            $this->_unlockOnFailure();
             $this->reset(true);
             return $this->handleException($e, 'lock');
         }
     }
 
+    protected function _unlockOnFailure(): void
+    {
+        if (!empty($this->_tableLocks)) {
+            try {
+                $this->queryUnprepared('UNLOCK TABLES');
+            } catch (\Throwable $e) {
+                $this->logException($e, 'unlock failure');
+            } finally {
+                $this->_tableLocks = [];
+            }
+        }
+    }
     /**
      * Sets the current table lock method.
      *
@@ -2081,13 +2125,17 @@ final class PDOdb
             $aggFuncs = ['SUM', 'AVG', 'MIN', 'MAX', 'COUNT', 'GROUP_CONCAT'];
             if (in_array($func, $aggFuncs, true)) {
                 $this->reset(true);
-                throw new \InvalidArgumentException("Aggregate function '{$func}()' is not allowed in WHERE clause.");
+                $e = new \InvalidArgumentException("Aggregate function '{$func}()' is not allowed in WHERE clause.");
+                $this->logException($e, "secureWhere [function={$func}]");
+                throw $e;
             }
         }
 
         if (!$this->_secureIsSafeColumn($column)) {
             $this->reset(true);
-            throw new \InvalidArgumentException("Unsafe WHERE clause rejected: {$column}");
+            $e = new \InvalidArgumentException("Unsafe WHERE clause rejected: {$column}");
+            $this->logException($e, "secureWhere [column={$column}]");
+            throw $e;
         }
 
         if (is_object($value)) {
@@ -2120,19 +2168,31 @@ final class PDOdb
 
         if (!$this->_secureIsSafeColumn($column) || !$this->_secureIsAllowedOperator($operator)) {
             $this->reset(true);
-            throw new \InvalidArgumentException("Unsafe WHERE clause rejected: {$column} {$operator}");
+            $e = new \InvalidArgumentException("Unsafe WHERE clause rejected: {$column} {$operator}");
+            $this->logException($e, "secureWhere [column={$column} operator={$operator}]");
+            throw $e;
+
         }
 
         // Frühzeitige Prüfung auf verdächtige skalare Werte
         if (is_scalar($value) && $this->_secureLooksSuspicious($value)) {
-            $this->_where[] = [
-                '__DEFERRED__' => true,
-                'cond'     => $cond,
-                'column'   => $column,
-                'operator' => $operator,
-                'value'    => $value,
-            ];
-            return $this;
+
+            if (PDOdb_HEURISTIC_WHERE_CHECK){
+                $this->_where[] = [
+                    '__DEFERRED__' => true,
+                    'cond'     => $cond,
+                    'column'   => $column,
+                    'operator' => $operator,
+                    'value'    => $value,
+                ];
+                return $this;
+            } else {
+                $this->reset(true);
+                $e = new \InvalidArgumentException("Suspicious value in WHERE clause: {$column} = {$value}");
+                $this->logException($e, "secureWhere [column={$column} value={$value}]");
+                throw $e;
+            }
+
         }
 
         // Platzhalter [F], [I], [N]
@@ -2303,16 +2363,13 @@ final class PDOdb
             $cond = '';
         }
 
+        // Kurzform-Notation: ['>=' => 2]
         if (is_array($value) && count($value) === 1 && is_string(key($value))) {
             $operator = key($value);
             $value = current($value);
         }
 
-        if ($value === null && $operator !== null && !in_array(strtoupper($operator), ['IS', 'IS NOT'])) {
-            $value = $operator;
-            $operator = '=';
-        }
-
+        // Null-Alias-Notation
         if ($value === 'DBNULL') {
             $operator = 'IS';
             $value = null;
@@ -2321,32 +2378,67 @@ final class PDOdb
             $value = null;
         }
 
+        // Nur IS / IS NOT dürfen mit NULL verwendet werden
+        if ($value === null && !in_array(strtoupper($operator), ['IS', 'IS NOT'], true)) {
+            $this->reset(true);
+            throw new \InvalidArgumentException("Unsafe HAVING clause: NULL requires IS or IS NOT operator.");
+        }
+
+        // Sonderfall: false als Value ist nicht erlaubt
         if ($value === false) {
             $this->reset(true);
             throw new \InvalidArgumentException("Unsafe HAVING clause: boolean FALSE not allowed.");
         }
 
-        if (!is_null($value)) {
-            if (
-                !$this->_secureIsSafeColumn($column) ||
-                !$this->_secureIsAllowedOperator($operator)
-            ) {
+        // Operator normalisieren
+        $op = strtoupper($operator);
+
+        // BETWEEN braucht exakt zwei Werte
+        if (in_array($op, ['BETWEEN', 'NOT BETWEEN'], true)) {
+            if (!is_array($value) || count($value) !== 2) {
                 $this->reset(true);
-                throw new \InvalidArgumentException("Unsafe HAVING clause rejected: {$column} {$operator}");
+                throw new \InvalidArgumentException("HAVING operator '{$op}' requires an array with exactly two values.");
             }
         }
 
-        $isAlias = in_array($column, $this->_selectAliases ?? [], true);
-        $isGrouped = $this->_isInGroupBy($column);
+        // IN braucht ein valides Array
+        if (in_array($op, ['IN', 'NOT IN'], true)) {
+            if (!is_array($value) || empty($value)) {
+                $this->reset(true);
+                throw new \InvalidArgumentException("HAVING operator '{$op}' requires a non-empty array.");
+            }
+        }
+
+        // Spezial-Placeholder oder SubQuery validieren (wenn es einer ist)
+        if (
+            ($value instanceof self && $value->isSubQuery === true)
+            || (is_array($value) && count($value) === 1 && in_array(key($value), ['[F]', '[I]', '[N]'], true))
+        ) {
+            try {
+                $this->_secureValidateSpecialValue($value);
+            } catch (\Throwable $e) {
+                $this->reset(true);
+                throw new \InvalidArgumentException("Invalid special value in HAVING clause: " . $e->getMessage(), 0, $e);
+            }
+        }
+
+        // Sicherheit: Column und Operator prüfen
+        if (!$this->_secureIsSafeColumn($column) || !$this->_secureIsAllowedOperator($operator)) {
+            $this->reset(true);
+            throw new \InvalidArgumentException("Unsafe HAVING clause rejected: {$column} {$operator}");
+        }
+
+        // Column muss erlaubt sein: Aggregat, Alias oder GroupBy
+        $isAlias      = in_array($column, $this->_selectAliases ?? [], true);
+        $isGrouped    = $this->_isInGroupBy($column);
         $isAggregated = $this->_isAggregateFunction($column);
 
-        // Nur erlauben, wenn Alias ODER Aggregat ODER Gruppiert
         if (!$isAlias && !$isGrouped && !$isAggregated) {
             $this->reset(true);
             throw new \InvalidArgumentException("Invalid HAVING column '{$column}': must be an alias, aggregate or in GROUP BY");
         }
 
-        // Nicht direkt setzen – sondern in _pendingHaving zwischenspeichern
+        // Deferred speichern
         $this->_pendingHaving[] = [
             $cond,
             $column,
@@ -4042,6 +4134,19 @@ final class PDOdb
         return array_unique($aliases);
     }
 
+    /**
+     * Gibt nur die Werte aus _bindParams zurück, um sie an execute() zu übergeben.
+     *
+     * @return array<int, mixed>
+     */
+    protected function _getBindValues(): array
+    {
+        return array_map(
+            fn($p) => is_array($p) && array_key_exists('value', $p) ? $p['value'] : $p,
+            $this->_bindParams
+        );
+    }
+
     protected function _isInGroupBy(string $column): bool
     {
         foreach ($this->_groupBy as $group) {
@@ -4177,6 +4282,387 @@ final class PDOdb
     }
 
     /**
+     * Escapes a table and column identifier for use in SQL queries.
+     *
+     * Converts dot notation (e.g. "table.column") into properly backtick-quoted form
+     * suitable for MySQL (e.g. "`table`.`column`") to prevent syntax errors and
+     * SQL injection via identifiers.
+     *
+     * @param string $column The column identifier, possibly with table prefix (dot notation).
+     * @return string The escaped identifier with backticks.
+     */
+    protected function _secureEscapeTableAndColumn(string $column): string
+    {
+        return '`' . str_replace('.', '`.`', $column) . '`';
+    }
+
+    /**
+     * Extracts individual expressions from a SQL CASE statement for further validation.
+     *
+     * This helper method is used to safely parse and dissect complex CASE expressions into
+     * smaller parts such as conditions, THEN values, and the optional ELSE value.
+     *
+     * Example:
+     *   CASE WHEN a = 1 THEN 'x' WHEN b = 2 THEN 'y' ELSE 'z' END
+     *   → ['a = 1', "'x'", 'b = 2', "'y'", "'z'"]
+     *
+     * The returned array can then be passed recursively to the SQL expression validator.
+     *
+     * @param string $expr The full CASE expression to parse.
+     * @return array Array of extracted expression parts.
+     * @throws \InvalidArgumentException If the CASE expression is malformed.
+     */
+    protected function _secureExtractCaseParts(string $expr): array
+    {
+        $expr = preg_replace('/\s+/', ' ', trim($expr));
+        $result = [];
+
+        if (!preg_match_all('/WHEN (.+?) THEN (.+?)(?= WHEN| ELSE| END)/i', $expr, $matches, PREG_SET_ORDER)) {
+            throw new \InvalidArgumentException("Malformed CASE expression: $expr");
+        }
+
+        foreach ($matches as $m) {
+            $result[] = $m[1];
+            $result[] = $m[2];
+        }
+
+        if (preg_match('/ELSE (.+?) END$/i', $expr, $elseMatch)) {
+            $result[] = $elseMatch[1];
+        }
+
+        return $result;
+    }
+
+    protected function _secureGetBaseTableName(): ?string
+    {
+        $raw = $this->_tableName;
+
+        if (preg_match('/^`?([a-zA-Z0-9_]+)`?(?:\s+[a-zA-Z0-9_]+)?$/', $raw, $m)) {
+            return str_replace($this->prefix, '', $m[1]);
+        }
+
+        return null;
+    }
+
+    /**
+     * Retrieves column metadata for a given column in the current base table.
+     *
+     * @param string $column
+     * @return array{name: string, type: string, enumValues?: string[]}|null
+     */
+    protected function _secureGetColumnMeta(string $column): ?array
+    {
+        $table = $this->_secureGetBaseTableName();
+
+        if (!$table || preg_match('/[^\w$]/', $table)) {
+            return null;
+        }
+
+        // Cache hit
+        if (isset($this->_columnCache[$table][$column])) {
+            $entry = $this->_columnCache[$table][$column];
+            return is_array($entry) && isset($entry['name'], $entry['type']) ? $entry : null;
+        }
+
+        try {
+            $pdo = $this->connect($this->defConnectionName);
+            $stmt = $pdo->query("DESCRIBE `{$table}`");
+            $columns = $stmt->fetchAll(\PDO::FETCH_ASSOC);
+
+            foreach ($columns as $col) {
+                $colName = $col['Field'];
+                $colType = strtolower($col['Type']);
+
+                $baseType = preg_split('/\s+/', preg_replace('/\(.*/', '', $colType))[0] ?? '';
+
+                $entry = ['name' => $colName, 'type' => $baseType];
+
+                if (str_starts_with($colType, 'enum')) {
+                    preg_match_all("/'([^']+)'/", $colType, $matches);
+                    $entry['enumValues'] = $matches[1] ?? [];
+                }
+
+                $this->_columnCache[$table][$colName] = $entry;
+            }
+
+            $entry = $this->_columnCache[$table][$column] ?? null;
+            return is_array($entry) && isset($entry['name'], $entry['type']) ? $entry : null;
+
+        } catch (\Exception $e) {
+            return null;
+        }
+    }
+
+    /**
+     * Validates whether the given SQL operator is allowed and safe to use in WHERE clauses.
+     *
+     * Only a specific set of common and secure SQL comparison operators is permitted.
+     * This helps prevent abuse of unsupported or dangerous operators (e.g. user-supplied "OR", "||", etc).
+     *
+     * @param string $op The SQL operator to check (e.g. '=', 'LIKE', 'IS NOT')
+     * @return bool True if the operator is in the allowed list, false otherwise
+     */
+    protected function _secureIsAllowedOperator(string $op): bool
+    {
+        $allowed = [
+            '=', '!=', '<>', '<', '<=', '>', '>=',
+            'LIKE', 'NOT LIKE',
+            'IN', 'NOT IN',
+            'BETWEEN', 'NOT BETWEEN',
+            'IS', 'IS NOT'
+        ];
+
+        return in_array(strtoupper(trim($op)), $allowed, true);
+    }
+
+    /**
+     * Check whether a column name or SQL function expression is considered safe for use in WHERE, SELECT etc.
+     *
+     * This method validates that the column is either:
+     *  1. A valid plain column name (including optional table alias and backticks)
+     *  2. A safe SQL function call (e.g. COUNT(*), SUM(price), DATE(created_at))
+     *
+     * @param string $column The column name or SQL function to validate
+     * @return bool True if safe, false if potentially dangerous or malformed
+     */
+    protected function _secureIsSafeColumn(string $column): bool
+    {
+        if (preg_match('/^`?[a-zA-Z_][a-zA-Z0-9_]*`?(\.`?[a-zA-Z_][a-zA-Z0-9_]*`?)?$/', $column)) {
+            return true;
+        }
+
+        if (preg_match('/^([A-Z_]+)\(\s*(\*|`?[a-zA-Z_][a-zA-Z0-9_]*`?(\.`?[a-zA-Z_][a-zA-Z0-9_]*`?)?)\s*\)$/i', $column, $matches)) {
+            $allowedFunctions = [
+                'DATE', 'YEAR', 'MONTH', 'DAY', 'TIME', 'HOUR', 'MINUTE', 'SECOND',
+                'COUNT', 'SUM', 'AVG', 'MIN', 'MAX'
+            ];
+
+            $func = strtoupper($matches[1]);
+            $arg  = $matches[2];
+
+            return in_array($func, $allowedFunctions, true);
+        }
+
+        return false;
+    }
+
+    /**
+     * Determines whether a given string is a quoted SQL string literal.
+     *
+     * Accepts both single-quoted ('example') and double-quoted ("example") formats.
+     * This is primarily used during SQL expression validation to allow
+     * static string values in GROUP BY or ORDER BY clauses.
+     *
+     * Note: Escaped quotes or complex nested quotes are not handled here –
+     * this method is intentionally strict for security reasons.
+     *
+     * @param string $arg The string to check.
+     * @return bool True if the argument is a simple quoted string, false otherwise.
+     */
+    protected function _secureIsQuotedString(string $arg): bool
+    {
+        return preg_match("/^'[^']*'$/", $arg) || preg_match('/^"[^"]*"$/', $arg);
+    }
+
+    /**
+     * Checks if a value string contains suspicious SQL injection patterns.
+     */
+    protected function _secureLooksSuspicious(mixed $value): bool
+    {
+
+        if (!is_string($value)) {
+            return false;
+        }
+
+        $value = strtolower(trim($value));
+        $value = preg_replace('/\s+/', ' ', $value); // Normalisiert Whitespace zu einfachem Leerzeichen
+
+        // Verdächtige SQL-Schlüsselwörter oder Zeichen
+        $blacklist = [
+            "'", '"', '\\',  // Quote & Escape Characters
+
+            ';', '--', '/*', '*/',
+
+            ' or ', ' and ', ' xor ',
+
+            'sleep(', 'benchmark(', 'union ', 'select ', 'insert ', 'update ',
+            'delete ', 'drop ', 'truncate ', 'exec(', 'execute ', 'version()',
+            'char(', 'ascii(', 'hex(',
+        ];
+
+        foreach ($blacklist as $needle) {
+            if (str_contains($value, $needle)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Validates all HAVING conditions for security and consistency.
+     *
+     * This is called during query preparation to ensure that the HAVING clause
+     * does not contain any unsafe expressions, unvalidated subqueries, or dangerous placeholders.
+     *
+     * @param array $having          The internal _pendingHaving array to validate.
+     * @param array $allowedAliases List of allowed aliases (e.g. from SELECT or subqueries).
+     *
+     * @throws \InvalidArgumentException On any suspicious or unsupported input.
+     */
+    protected function _secureSanitizeHaving(array $having, array $allowedAliases = []): void
+    {
+        foreach ($having as $index => $condition) {
+            if (!is_array($condition)) {
+                $this->reset(true);
+                throw new \InvalidArgumentException("Invalid HAVING condition at index {$index} (not an array)");
+            }
+
+            if (count($condition) === 3) {
+                [$column, $value, $operator] = $condition;
+                $cond = 'AND';
+            } elseif (count($condition) === 4) {
+                [$cond, $column, $operator, $value] = $condition;
+            } else {
+                $this->reset(true);
+                throw new \InvalidArgumentException("Invalid HAVING condition at index {$index} (must have 3 or 4 elements)");
+            }
+
+            // 1. Ensure column is a valid string
+            if (!is_string($column) || trim($column) === '') {
+                $this->reset(true);
+                throw new \InvalidArgumentException("Missing or invalid column in HAVING at index {$index}");
+            }
+
+            // 2. Allow whitelisted aliases or check as regular column
+            $isAlias = in_array($column, $allowedAliases, true);
+            if (!$isAlias && !$this->_secureIsSafeColumn($column)) {
+                $this->reset(true);
+                throw new \InvalidArgumentException("Unsafe column in HAVING: {$column}");
+            }
+
+            // 3. Validate operator
+            if (!$this->_secureIsAllowedOperator($operator)) {
+                $this->reset(true);
+                throw new \InvalidArgumentException("Invalid operator in HAVING: {$operator}");
+            }
+
+            // 4. Handle subquery
+            if (is_object($value) && method_exists($value, 'getSubQuery')) {
+                $sub = $value->getSubQuery();
+                if (empty($sub['query']) || !is_string($sub['query'])) {
+                    $this->reset(true);
+                    throw new \InvalidArgumentException("Invalid subquery in HAVING at index {$index}");
+                }
+            }
+
+            // 5. Handle special placeholders
+            elseif (is_array($value) && count($value) === 1 && is_string(key($value))) {
+                $flag = key($value);
+                $payload = current($value);
+
+                switch ($flag) {
+                    case '[F]':
+                        $this->_secureValidateFunc($payload[0] ?? '');
+                        break;
+
+                    case '[I]':
+                        foreach ((array)$payload as $id) {
+                            if (!preg_match('/^[a-zA-Z0-9_\.]+$/', $id)) {
+                                $this->reset(true);
+                                throw new \InvalidArgumentException("Invalid identifier in [I]: {$id}");
+                            }
+                        }
+                        break;
+
+                    case '[N]':
+                        foreach ((array)$payload as $num) {
+                            if (!is_int($num)) {
+                                $this->reset(true);
+                                throw new \InvalidArgumentException("Non-integer value in [N]: " . json_encode($num));
+                            }
+                        }
+                        break;
+
+                    default:
+                        $this->reset(true);
+                        throw new \InvalidArgumentException("Unknown placeholder in HAVING: {$flag}");
+                }
+            }
+
+            // 6. Arrays for BETWEEN / IN
+            elseif (in_array(strtoupper($operator), ['BETWEEN', 'NOT BETWEEN'], true)) {
+                if (!is_array($value) || count($value) !== 2) {
+                    $this->reset(true);
+                    throw new \InvalidArgumentException("HAVING BETWEEN requires array with exactly 2 values.");
+                }
+                foreach ($value as $v) {
+                    if (!is_scalar($v)) {
+                        $this->reset(true);
+                        throw new \InvalidArgumentException("Non-scalar value in HAVING BETWEEN array.");
+                    }
+                }
+            }
+
+            elseif (in_array(strtoupper($operator), ['IN', 'NOT IN'], true)) {
+                if (!is_array($value) || empty($value)) {
+                    $this->reset(true);
+                    throw new \InvalidArgumentException("HAVING IN requires non-empty array.");
+                }
+                foreach ($value as $v) {
+                    if (!is_scalar($v)) {
+                        $this->reset(true);
+                        throw new \InvalidArgumentException("Non-scalar value in HAVING IN array.");
+                    }
+                }
+            }
+
+            // 7. Scalar with suspicious content
+            elseif (is_scalar($value) && $this->_secureLooksSuspicious($value)) {
+                $this->reset(true);
+                throw new \InvalidArgumentException("Suspicious value in HAVING: " . json_encode($value));
+            }
+
+            // 8. Unsupported type
+            elseif (!is_scalar($value) && !is_null($value)) {
+                $this->reset(true);
+                throw new \InvalidArgumentException("Unsupported value type in HAVING: " . gettype($value));
+            }
+
+            // Store the validated condition
+            $this->_having[] = [$cond, $column, $operator, $value];
+        }
+    }
+
+    /**
+     * Performs a basic security check on an SQL expression to detect dangerous keywords or patterns.
+     *
+     * This method scans the expression for forbidden SQL constructs such as:
+     * - Statement terminators (`;`)
+     * - Comment indicators (`--`, `#`, `/*`)
+     * - Dangerous SQL keywords (`DROP`, `UNION`, `SLEEP`, `LOAD_FILE`, etc.)
+     *
+     * If any pattern matches, an InvalidArgumentException is thrown immediately.
+     * This method is designed to be a first-level defense against SQL injection.
+     *
+     * @param string $expr The raw SQL expression to validate.
+     * @throws \InvalidArgumentException If a forbidden keyword or pattern is found.
+     */
+    protected function _secureSanitizeSqlExpr(string $expr): void
+    {
+        $forbidden = [
+            '/;/', '/--/', '/#/', '/\/\*/',
+            '/\b(UNION|DROP|DELETE|UPDATE|INSERT|REPLACE|SLEEP|BENCHMARK|LOAD_FILE|OUTFILE)\b/i'
+        ];
+
+        foreach ($forbidden as $pattern) {
+            if (preg_match($pattern, $expr)) {
+                throw new \InvalidArgumentException("Illegal keyword in SQL expression: $expr");
+            }
+        }
+    }
+
+    /**
      * Validates and transforms deferred WHERE conditions based on column metadata.
      *
      * This method checks each deferred condition (added via secureWhere)
@@ -4242,111 +4728,61 @@ final class PDOdb
     }
 
     /**
-     * Validates all HAVING conditions for security and consistency.
+     * Splits a SQL function argument list into individual arguments.
      *
-     * This is called during query preparation to ensure that the HAVING clause
-     * does not contain any unsafe expressions, unvalidated subqueries, or dangerous placeholders.
+     * This method is used to safely parse argument strings from SQL function calls
+     * (e.g., "CONCAT(a, 'b,c', IF(x, y, z))") by considering nesting and quoted strings.
+     * It correctly handles:
+     * - Quoted strings (single or double quotes)
+     * - Nested parentheses (e.g., nested function calls)
+     * - Commas inside quotes or nested calls (which should not split)
      *
-     * @param array $having          The internal _pendingHaving array to validate.
-     * @param array $allowedAliases List of allowed aliases (e.g. from SELECT or subqueries).
+     * Example:
+     *   Input: "a, 'b,c', IF(x, y, z)"
+     *   Output: ["a", "'b,c'", "IF(x, y, z)"]
      *
-     * @throws \InvalidArgumentException On any suspicious or unsupported input.
+     * @param string $args Raw function argument string.
+     * @return array List of individual argument strings.
      */
-    protected function _secureSanitizeHaving(array $having, array $allowedAliases = []): void
+    protected function _secureSplitFunctionArgs(string $args): array
     {
-        foreach ($having as $index => $condition) {
-            if (!is_array($condition)) {
-                $this->reset(true);
-                throw new \InvalidArgumentException("Invalid HAVING condition at index {$index} (not an array)");
-            }
+        $result = [];
+        $depth = 0;
+        $buffer = '';
+        $inQuote = false;
+        $quoteChar = '';
+        $len = strlen($args);
 
-            if (count($condition) === 3) {
-                [$column, $value, $operator] = $condition;
-                $cond = 'AND';
-            } elseif (count($condition) === 4) {
-                [$cond, $column, $operator, $value] = $condition;
-            } else {
-                $this->reset(true);
-                throw new \InvalidArgumentException("Invalid HAVING condition at index {$index} (must have 3 or 4 elements)");
-            }
+        for ($i = 0; $i < $len; $i++) {
+            $char = $args[$i];
 
-            // 1. Ensure column is a valid string
-            if (!is_string($column) || trim($column) === '') {
-                $this->reset(true);
-                throw new \InvalidArgumentException("Missing or invalid column in HAVING at index {$index}");
-            }
-
-            // 2. Allow whitelisted aliases or check as regular column
-            $isAlias = in_array($column, $allowedAliases, true);
-            if (!$isAlias && !$this->_secureIsSafeColumn($column)) {
-                $this->reset(true);
-                throw new \InvalidArgumentException("Unsafe column in HAVING: {$column}");
-            }
-
-            // 3. Validate operator
-            if (!$this->_secureIsAllowedOperator($operator)) {
-                $this->reset(true);
-                throw new \InvalidArgumentException("Invalid operator in HAVING: {$operator}");
-            }
-
-            // 4. Handle subquery
-            if (is_object($value) && method_exists($value, 'getSubQuery')) {
-                $sub = $value->getSubQuery();
-                if (empty($sub['query']) || !is_string($sub['query'])) {
-                    $this->reset(true);
-                    throw new \InvalidArgumentException("Invalid subquery in HAVING at index {$index}");
+            if (($char === "'" || $char === '"')) {
+                if ($inQuote && $char === $quoteChar) {
+                    $inQuote = false;
+                } elseif (!$inQuote) {
+                    $inQuote = true;
+                    $quoteChar = $char;
+                }
+            } elseif (!$inQuote) {
+                if ($char === '(') {
+                    $depth++;
+                } elseif ($char === ')') {
+                    $depth--;
+                } elseif ($char === ',' && $depth === 0) {
+                    $result[] = trim($buffer);
+                    $buffer = '';
+                    continue;
                 }
             }
 
-            // 5. Handle special placeholders
-            elseif (is_array($value) && count($value) === 1) {
-                $flag = key($value);
-                $payload = current($value);
-
-                switch ($flag) {
-                    case '[F]':
-                        $this->_secureValidateFunc($payload[0] ?? '');
-                        break;
-
-                    case '[I]':
-                        foreach ((array)$payload as $id) {
-                            if (!preg_match('/^[a-zA-Z0-9_\.]+$/', $id)) {
-                                $this->reset(true);
-                                throw new \InvalidArgumentException("Invalid identifier in [I]: {$id}");
-                            }
-                        }
-                        break;
-
-                    case '[N]':
-                        foreach ((array)$payload as $num) {
-                            if (!is_int($num)) {
-                                $this->reset(true);
-                                throw new \InvalidArgumentException("Non-integer value in [N]: " . json_encode($num));
-                            }
-                        }
-                        break;
-
-                    default:
-                        $this->reset(true);
-                        throw new \InvalidArgumentException("Unknown placeholder in HAVING: {$flag}");
-                }
-            }
-
-            // 6. Scalar with suspicious content
-            elseif (is_scalar($value) && $this->_secureLooksSuspicious($value)) {
-                $this->reset(true);
-                throw new \InvalidArgumentException("Suspicious value in HAVING: " . json_encode($value));
-            }
-
-            // 7. Unsupported type
-            elseif (!is_scalar($value) && !is_null($value)) {
-                $this->reset(true);
-                throw new \InvalidArgumentException("Unsupported value type in HAVING: " . gettype($value));
-            }
-
-            // Store the validated condition
-            $this->_having[] = [$cond, $column, $operator, $value];
+            $buffer .= $char;
         }
+
+        if (trim($buffer) !== '') {
+            $result[] = trim($buffer);
+        }
+
+        return $result;
     }
 
     /**
@@ -4411,168 +4847,6 @@ final class PDOdb
         }
 
         throw new \InvalidArgumentException("Unsafe [F] expression: {$expr}");
-    }
-
-    /**
-     * Gibt nur die Werte aus _bindParams zurück, um sie an execute() zu übergeben.
-     *
-     * @return array<int, mixed>
-     */
-    protected function _getBindValues(): array
-    {
-        return array_map(
-            fn($p) => is_array($p) && array_key_exists('value', $p) ? $p['value'] : $p,
-            $this->_bindParams
-        );
-    }
-
-    /**
-     * Checks if a value string contains suspicious SQL injection patterns.
-     */
-    protected function _secureLooksSuspicious(mixed $value): bool
-    {
-
-        if (!is_string($value)) {
-            return false;
-        }
-
-        $value = strtolower(trim($value));
-        $value = preg_replace('/\s+/', ' ', $value); // Normalisiert Whitespace zu einfachem Leerzeichen
-
-        // Verdächtige SQL-Schlüsselwörter oder Zeichen
-        $blacklist = [
-            "'", '"', '\\',  // Quote & Escape Characters
-
-            ';', '--', '/*', '*/',
-
-            ' or ', ' and ', ' xor ',
-
-            'sleep(', 'benchmark(', 'union ', 'select ', 'insert ', 'update ',
-            'delete ', 'drop ', 'truncate ', 'exec(', 'execute ', 'version()',
-            'char(', 'ascii(', 'hex(',
-        ];
-
-        foreach ($blacklist as $needle) {
-            if (str_contains($value, $needle)) {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    /**
-     * Retrieves column metadata for a given column in the current base table.
-     *
-     * @param string $column
-     * @return array{name: string, type: string, enumValues?: string[]}|null
-     */
-    protected function _secureGetColumnMeta(string $column): ?array
-    {
-        $table = $this->_secureGetBaseTableName();
-
-        if (!$table || preg_match('/[^\w$]/', $table)) {
-            return null;
-        }
-
-        // Cache hit
-        if (isset($this->_columnCache[$table][$column])) {
-            $entry = $this->_columnCache[$table][$column];
-            return is_array($entry) && isset($entry['name'], $entry['type']) ? $entry : null;
-        }
-
-        try {
-            $pdo = $this->connect($this->defConnectionName);
-            $stmt = $pdo->query("DESCRIBE `{$table}`");
-            $columns = $stmt->fetchAll(\PDO::FETCH_ASSOC);
-
-            foreach ($columns as $col) {
-                $colName = $col['Field'];
-                $colType = strtolower($col['Type']);
-
-                $baseType = preg_split('/\s+/', preg_replace('/\(.*/', '', $colType))[0] ?? '';
-
-                $entry = ['name' => $colName, 'type' => $baseType];
-
-                if (str_starts_with($colType, 'enum')) {
-                    preg_match_all("/'([^']+)'/", $colType, $matches);
-                    $entry['enumValues'] = $matches[1] ?? [];
-                }
-
-                $this->_columnCache[$table][$colName] = $entry;
-            }
-
-            $entry = $this->_columnCache[$table][$column] ?? null;
-            return is_array($entry) && isset($entry['name'], $entry['type']) ? $entry : null;
-
-        } catch (\Exception $e) {
-            return null;
-        }
-    }
-
-    protected function _secureGetBaseTableName(): ?string
-    {
-        $raw = $this->_tableName;
-
-        if (preg_match('/^`?([a-zA-Z0-9_]+)`?(?:\s+[a-zA-Z0-9_]+)?$/', $raw, $m)) {
-            return str_replace($this->prefix, '', $m[1]);
-        }
-
-        return null;
-    }
-
-    /**
-     * Check whether a column name or SQL function expression is considered safe for use in WHERE, SELECT etc.
-     *
-     * This method validates that the column is either:
-     *  1. A valid plain column name (including optional table alias and backticks)
-     *  2. A safe SQL function call (e.g. COUNT(*), SUM(price), DATE(created_at))
-     *
-     * @param string $column The column name or SQL function to validate
-     * @return bool True if safe, false if potentially dangerous or malformed
-     */
-    protected function _secureIsSafeColumn(string $column): bool
-    {
-        if (preg_match('/^`?[a-zA-Z_][a-zA-Z0-9_]*`?(\.`?[a-zA-Z_][a-zA-Z0-9_]*`?)?$/', $column)) {
-            return true;
-        }
-
-        if (preg_match('/^([A-Z_]+)\(\s*(\*|`?[a-zA-Z_][a-zA-Z0-9_]*`?(\.`?[a-zA-Z_][a-zA-Z0-9_]*`?)?)\s*\)$/i', $column, $matches)) {
-            $allowedFunctions = [
-                'DATE', 'YEAR', 'MONTH', 'DAY', 'TIME', 'HOUR', 'MINUTE', 'SECOND',
-                'COUNT', 'SUM', 'AVG', 'MIN', 'MAX'
-            ];
-
-            $func = strtoupper($matches[1]);
-            $arg  = $matches[2];
-
-            return in_array($func, $allowedFunctions, true);
-        }
-
-        return false;
-    }
-
-
-    /**
-     * Validates whether the given SQL operator is allowed and safe to use in WHERE clauses.
-     *
-     * Only a specific set of common and secure SQL comparison operators is permitted.
-     * This helps prevent abuse of unsupported or dangerous operators (e.g. user-supplied "OR", "||", etc).
-     *
-     * @param string $op The SQL operator to check (e.g. '=', 'LIKE', 'IS NOT')
-     * @return bool True if the operator is in the allowed list, false otherwise
-     */
-    protected function _secureIsAllowedOperator(string $op): bool
-    {
-        $allowed = [
-            '=', '!=', '<>', '<', '<=', '>', '>=',
-            'LIKE', 'NOT LIKE',
-            'IN', 'NOT IN',
-            'BETWEEN', 'NOT BETWEEN',
-            'IS', 'IS NOT'
-        ];
-
-        return in_array(strtoupper(trim($op)), $allowed, true);
     }
 
     /**
@@ -4641,149 +4915,6 @@ final class PDOdb
         throw new \InvalidArgumentException("Invalid SQL expression: $expr");
     }
 
-    /**
-     * Extracts individual expressions from a SQL CASE statement for further validation.
-     *
-     * This helper method is used to safely parse and dissect complex CASE expressions into
-     * smaller parts such as conditions, THEN values, and the optional ELSE value.
-     *
-     * Example:
-     *   CASE WHEN a = 1 THEN 'x' WHEN b = 2 THEN 'y' ELSE 'z' END
-     *   → ['a = 1', "'x'", 'b = 2', "'y'", "'z'"]
-     *
-     * The returned array can then be passed recursively to the SQL expression validator.
-     *
-     * @param string $expr The full CASE expression to parse.
-     * @return array Array of extracted expression parts.
-     * @throws \InvalidArgumentException If the CASE expression is malformed.
-     */
-    protected function _secureExtractCaseParts(string $expr): array
-    {
-        $expr = preg_replace('/\s+/', ' ', trim($expr));
-        $result = [];
-
-        if (!preg_match_all('/WHEN (.+?) THEN (.+?)(?= WHEN| ELSE| END)/i', $expr, $matches, PREG_SET_ORDER)) {
-            throw new \InvalidArgumentException("Malformed CASE expression: $expr");
-        }
-
-        foreach ($matches as $m) {
-            $result[] = $m[1];
-            $result[] = $m[2];
-        }
-
-        if (preg_match('/ELSE (.+?) END$/i', $expr, $elseMatch)) {
-            $result[] = $elseMatch[1];
-        }
-
-        return $result;
-    }
-
-    /**
-     * Performs a basic security check on an SQL expression to detect dangerous keywords or patterns.
-     *
-     * This method scans the expression for forbidden SQL constructs such as:
-     * - Statement terminators (`;`)
-     * - Comment indicators (`--`, `#`, `/*`)
-     * - Dangerous SQL keywords (`DROP`, `UNION`, `SLEEP`, `LOAD_FILE`, etc.)
-     *
-     * If any pattern matches, an InvalidArgumentException is thrown immediately.
-     * This method is designed to be a first-level defense against SQL injection.
-     *
-     * @param string $expr The raw SQL expression to validate.
-     * @throws \InvalidArgumentException If a forbidden keyword or pattern is found.
-     */
-    protected function _secureSanitizeSqlExpr(string $expr): void
-    {
-        $forbidden = [
-            '/;/', '/--/', '/#/', '/\/\*/',
-            '/\b(UNION|DROP|DELETE|UPDATE|INSERT|REPLACE|SLEEP|BENCHMARK|LOAD_FILE|OUTFILE)\b/i'
-        ];
-
-        foreach ($forbidden as $pattern) {
-            if (preg_match($pattern, $expr)) {
-                throw new \InvalidArgumentException("Illegal keyword in SQL expression: $expr");
-            }
-        }
-    }
-
-
-
-    /**
-     * Splits a SQL function argument list into individual arguments.
-     *
-     * This method is used to safely parse argument strings from SQL function calls
-     * (e.g., "CONCAT(a, 'b,c', IF(x, y, z))") by considering nesting and quoted strings.
-     * It correctly handles:
-     * - Quoted strings (single or double quotes)
-     * - Nested parentheses (e.g., nested function calls)
-     * - Commas inside quotes or nested calls (which should not split)
-     *
-     * Example:
-     *   Input: "a, 'b,c', IF(x, y, z)"
-     *   Output: ["a", "'b,c'", "IF(x, y, z)"]
-     *
-     * @param string $args Raw function argument string.
-     * @return array List of individual argument strings.
-     */
-    protected function _secureSplitFunctionArgs(string $args): array
-    {
-        $result = [];
-        $depth = 0;
-        $buffer = '';
-        $inQuote = false;
-        $quoteChar = '';
-        $len = strlen($args);
-
-        for ($i = 0; $i < $len; $i++) {
-            $char = $args[$i];
-
-            if (($char === "'" || $char === '"')) {
-                if ($inQuote && $char === $quoteChar) {
-                    $inQuote = false;
-                } elseif (!$inQuote) {
-                    $inQuote = true;
-                    $quoteChar = $char;
-                }
-            } elseif (!$inQuote) {
-                if ($char === '(') {
-                    $depth++;
-                } elseif ($char === ')') {
-                    $depth--;
-                } elseif ($char === ',' && $depth === 0) {
-                    $result[] = trim($buffer);
-                    $buffer = '';
-                    continue;
-                }
-            }
-
-            $buffer .= $char;
-        }
-
-        if (trim($buffer) !== '') {
-            $result[] = trim($buffer);
-        }
-
-        return $result;
-    }
-
-    /**
-     * Determines whether a given string is a quoted SQL string literal.
-     *
-     * Accepts both single-quoted ('example') and double-quoted ("example") formats.
-     * This is primarily used during SQL expression validation to allow
-     * static string values in GROUP BY or ORDER BY clauses.
-     *
-     * Note: Escaped quotes or complex nested quotes are not handled here –
-     * this method is intentionally strict for security reasons.
-     *
-     * @param string $arg The string to check.
-     * @return bool True if the argument is a simple quoted string, false otherwise.
-     */
-    protected function _secureIsQuotedString(string $arg): bool
-    {
-        return preg_match("/^'[^']*'$/", $arg) || preg_match('/^"[^"]*"$/', $arg);
-    }
-
     protected function _secureValidateSpecialValue(mixed $value): void
     {
         // SubQuery
@@ -4824,18 +4955,13 @@ final class PDOdb
     }
 
     /**
-     * Escapes a table and column identifier for use in SQL queries.
-     *
-     * Converts dot notation (e.g. "table.column") into properly backtick-quoted form
-     * suitable for MySQL (e.g. "`table`.`column`") to prevent syntax errors and
-     * SQL injection via identifiers.
-     *
-     * @param string $column The column identifier, possibly with table prefix (dot notation).
-     * @return string The escaped identifier with backticks.
+     * Hook for saving debug info before internal state is cleared.
      */
-    protected function _secureEscapeTableAndColumn(string $column): string
+    protected function _beforeReset(): void
     {
-        return '`' . str_replace('.', '`.`', $column) . '`';
+        if (!empty($this->_query) && !empty($this->_bindParams)) {
+            $this->_lastQuery = $this->_replacePlaceHolders($this->_query, $this->_bindParams);
+        }
     }
 
     /**
@@ -4848,12 +4974,32 @@ final class PDOdb
      */
     protected function reset(bool $hard = false): self
     {
+        $this->_lastDebugQuery = '';
+
+        if (!empty($this->_query)) {
+            $this->_lastDebugQuery = $this->_replacePlaceHolders($this->_query, $this->_bindParams ?? []);
+        } else {
+            $this->_lastDebugQuery = '-- Query not available: possibly blocked by exception or security rule';
+
+            if (!empty($this->_stmtError)) {
+                $code = $this->_stmtErrno ?? '???';
+                $this->_lastDebugQuery .= " [Error #{$code}: {$this->_stmtError}]";
+            }
+        }
+
         if ($this->traceEnabled) {
             $this->trace[] = [
                 $this->_lastQuery,
                 (microtime(true) - $this->traceStartQ),
                 $this->_traceGetCaller()
             ];
+        }
+
+
+        if ($hard) {
+            $this->_beforeReset();
+            $this->_pendingHaving = [];
+            $this->_selectAliases = [];
         }
 
         $this->_where = [];
@@ -4879,11 +5025,6 @@ final class PDOdb
         $this->_stmtErrno = null;
 
         $this->autoReconnectCount = 0;
-
-        if ($hard) {
-            $this->_pendingHaving = [];
-            $this->_selectAliases = [];
-        }
 
         return $this;
     }
@@ -4913,9 +5054,6 @@ final class PDOdb
         return static::class . "->" . $function .
             "() >>  file \"" . str_replace($this->traceStripPrefix, '', $file) . "\" line #" . $line;
     }
-
-
-
 
     protected function logException(\Throwable $e, ?string $context = null): void
     {
@@ -4971,4 +5109,14 @@ final class PDOdb
         return '(' . $this->_query . ')';
     }
 
+    public function getLastDebugQuery(): string
+    {
+        return $this->_lastDebugQuery;
+    }
+
+    public function clearLastQuery(): void
+    {
+        $this->_lastQuery        = '';
+        $this->_lastDebugQuery   = '';
+    }
 }
