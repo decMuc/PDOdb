@@ -6,6 +6,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
+
+## [1.3.3] – 2025-07-14
+
+### Added
+
+- **Heuristic WHERE condition checker** (enabled by default):  
+  A new safeguard mechanism has been added to detect suspicious WHERE clause values based on simple heuristics.  
+  This helps catch obvious SQL injection attempts (e.g. `1; DROP TABLE`, `SLEEP(1)`, etc.) even when using the base `where()` method.
+
+### Config
+- The heuristic check can be disabled globally via:
+
+```php
+  define('PDOdb_HEURISTIC_WHERE_CHECK', false);
+```  
+**Notes**
+* This check adds a small performance cost (typically 1–3 ms per affected query), but significantly improves safety for legacy or user-controlled input.
+
 ## [1.3.2] – 2025-07-12
 ### Changed
 - Reorganized method order across the entire class (grouped logically)
