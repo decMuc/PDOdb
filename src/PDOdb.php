@@ -42,9 +42,9 @@ final class PDOdb
     /**
      * Table prefix for all queries.
      *
-     * @var string
+     * @var array
      */
-    private string $prefix = '';
+    private array $prefix = [];
 
     /**
      * PDO connection instances, indexed by connection name.
@@ -519,11 +519,20 @@ final class PDOdb
      */
     public function setPrefix(string $prefix): void
     {
+        if ($this->isSubQuery) {
+            throw new \LogicException("Subqueries cannot change the prefix. Use full table names instead.");
+        }
+
         if (!preg_match('/^[a-zA-Z0-9_]*$/', $prefix)) {
             throw new \InvalidArgumentException("Invalid prefix: '{$prefix}'. Only letters, numbers and underscores are allowed.");
         }
 
-        $this->prefix = $prefix;
+        $this->prefix[$this->defConnectionName] = $prefix;
+    }
+
+    protected function getPrefix(): string
+    {
+        return $this->prefix[$this->defConnectionName] ?? '';
     }
 
     // Connects (protected)
@@ -1154,7 +1163,7 @@ final class PDOdb
      */
     public function lock(string|array $table): bool
     {
-        $prefix = $this->prefix ?? '';
+        $prefix = $this->getPrefix();
         $this->_query = "LOCK TABLES ";
         $this->_tableLocks = [];
 
@@ -2525,7 +2534,7 @@ final class PDOdb
 
         $table = $this->_secureValidateTable($table);
 
-        $prefix = $this->prefix ?? '';
+        $prefix = $this->getPrefix();
         $tableKey = $prefix . $table;
 
         if (!isset($this->_joinWheres[$tableKey])) {
@@ -2657,7 +2666,7 @@ final class PDOdb
         $this->_secureValidateSqlExpression($orderByField);
 
         // Prefixing (nur wenn kein schema.table vorhanden ist)
-        $prefix = $this->prefix ?? '';
+        $prefix = $this->getPrefix();
         if (!str_contains($orderByField, '.')) {
             $orderByField = $prefix . $orderByField;
         } elseif (preg_match('/^`([a-zA-Z0-9_]+)`\.`([a-zA-Z0-9_]+)`$/', $orderByField, $m)) {
@@ -2720,7 +2729,7 @@ final class PDOdb
         $this->count = 0;
 
         $tableName = $this->_secureValidateTable($tableName);
-        $prefix = $this->prefix ?? '';
+        $prefix = $this->getPrefix();
         $table = $prefix . $tableName;
 
         if (count($this->_join) > 0) {
@@ -2773,7 +2782,7 @@ final class PDOdb
             $this->_tableAlias = null;
         }
 
-        $prefixed = $this->prefix . $table;
+        $prefixed = $this->getPrefix() . $table;
         $this->_tableName = $alias ? "{$prefixed} {$alias}" : $prefixed;
 
         $columnList = is_array($columns) ? implode(', ', $columns) : $columns;
@@ -3003,7 +3012,7 @@ final class PDOdb
             }
         }
 
-        $table = $this->prefix . $tableName;
+        $table = $this->getPrefix() . $tableName;
         $quotedCols = implode(', ', array_map(fn($col) => "`$col`", $columns));
         $sql = "INSERT INTO {$table} ({$quotedCols}) VALUES {$allPlaceholders}";
 
@@ -3156,7 +3165,7 @@ final class PDOdb
             throw new \Exception("No database selected for connection '{$this->defConnectionName}'");
         }
 
-        $prefix = $this->prefix ?? '';
+        $prefix = $this->getPrefix();
 
         $validatedTables = [];
         foreach ($tables as $t) {
@@ -3204,7 +3213,7 @@ final class PDOdb
         $this->count = 0;
 
         $tableName = $this->_secureValidateTable($tableName);
-        $this->_query = 'UPDATE ' . $this->prefix . $tableName;
+        $this->_query = 'UPDATE ' . $this->getPrefix() . $tableName;
 
         try {
             $stmt = $this->_buildQuery($numRows, $tableData);
@@ -3241,7 +3250,7 @@ final class PDOdb
 
         // Compatible with old behavior (static or non-static prefix, as needed)
         // $prefix = property_exists($this, 'prefix') ? $this->prefix : (self::$prefix ?? '');
-        $prefix = $this->prefix ?? '';
+        $prefix = $this->getPrefix();
         if (empty($matches[2])) {
             return $query;
         }
@@ -3648,7 +3657,7 @@ final class PDOdb
             return false;
         }
 
-        $prefix = $this->prefix ?? '';
+        $prefix = $this->getPrefix();
         $table = $prefix . $tableName;
 
         $columns = implode(', ', array_map([$this, '_addTicks'], array_keys($insertData)));
@@ -4337,7 +4346,9 @@ final class PDOdb
         $raw = $this->_tableName;
 
         if (preg_match('/^`?([a-zA-Z0-9_]+)`?(?:\s+[a-zA-Z0-9_]+)?$/', $raw, $m)) {
-            return str_replace($this->prefix, '', $m[1]);
+            // return str_replace($this->prefix, '', $m[1]);
+            // fix - der Prefix ist ja Bestandteil des Tabellennamens - es sollen nur Aliase gelöscht werden
+            return $m[1];
         }
 
         return null;
