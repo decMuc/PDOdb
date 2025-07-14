@@ -5,7 +5,7 @@
 [![Composer Ready](https://img.shields.io/badge/Composer-ready-blueviolet)](https://packagist.org/packages/decmuc/pdodb)
 [![Packagist Version](https://img.shields.io/packagist/v/decmuc/pdodb.svg)](https://packagist.org/packages/decmuc/pdodb)
 
-**PDOdb** is a modern, secure, and fully compatible rewrite of the popular and awesome  [PHP-MySQLi-Database-Class by ThingEngineer](https://github.com/ThingEngineer/PHP-MySQLi-Database-Class) – designed as a direct replacement but built entirely on PHP’s native PDO extension.
+**PDOdb** is a modern, secure, and fully compatible rewrite of the popular and awesome [PHP-MySQLi-Database-Class by ThingEngineer](https://github.com/ThingEngineer/PHP-MySQLi-Database-Class) – designed as a direct replacement but built entirely on PHP’s native PDO extension.
 
 The goal of this project is to provide a **close to 1:1** logic-compatible alternative to the original class, allowing existing projects to migrate seamlessly to a safer, cleaner, and future-proof implementation – without rewriting business logic or adjusting method calls in most cases, except for a few legacy features that were intentionally dropped due to security, portability, or PDO-incompatibility.
 
