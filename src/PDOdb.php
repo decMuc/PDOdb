@@ -30,11 +30,11 @@ namespace decMuc\PDOdb;
  * Note: Setting this to TRUE introduces a small performance overhead,
  *       as column definitions may need to be retrieved via `getColumnMeta()`.
  */
-define('PDOdb_HEURISTIC_WHERE_CHECK', false);
+if (!defined('PDOdb_HEURISTIC_WHERE_CHECK')) {
+    define('PDOdb_HEURISTIC_WHERE_CHECK', true);
+}
 final class PDOdb
 {
-
-
 
     protected static ?string $_activeInstanceName = 'default';
     protected static array $_instances = [];
@@ -525,7 +525,6 @@ final class PDOdb
 
         $this->prefix = $prefix;
     }
-
 
     // Connects (protected)
 
