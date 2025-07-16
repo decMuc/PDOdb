@@ -101,9 +101,9 @@ final class PDOdb
     protected array $_oldPlWasSet = [];                                // Was $pageLimit set directly?
     protected array $_newPlWasSet = [];                                // Was setPageLimit() used?
     // ==[ 08. Legacy Result Statistics ]==
-    protected int $count = 0;            // ⛔ deprecated – use getRowCount()
-    protected int $totalCount = 0;       // ⛔ deprecated – use getTotalCount()
-    protected int $totalPages = 0;       // ⛔ deprecated – use getTotalPages()
+    protected int $count = 0;                                           // ⛔ deprecated – use getRowCount()
+    protected int $totalCount = 0;                                      // ⛔ deprecated – use getTotalCount()
+    protected int $totalPages = 0;                                      // ⛔ deprecated – use getTotalPages()
 
     // ==[ 09. Internal Result State ]==
     protected int $_count = 0;
@@ -4912,13 +4912,14 @@ final class PDOdb
             ];
         }
 
-
         if ($hard) {
             $this->_beforeReset();
             $this->_pendingHaving = [];
             $this->_selectAliases = [];
             $this->_returnKey[$this->defConnectionName] = null;
             $this->_returnType[$this->defConnectionName] = 'array';
+            $this->_oldPlWasSet[$this->defConnectionName] = false;
+            $this->_newPlWasSet[$this->defConnectionName] = false;
         }
 
         $this->_where = [];
@@ -4940,7 +4941,6 @@ final class PDOdb
         $this->_tableAlias = null;
         $this->_stmtError = null;
         $this->_stmtErrno = null;
-
         $this->autoReconnectCount = 0;
 
         return $this;
@@ -5040,30 +5040,30 @@ final class PDOdb
     }
 
     public function __set(string $name, mixed $value): void
-{
-    if ($name === 'pageLimit') {
+    {
+        if ($name === 'pageLimit') {
 
-        if (!is_numeric($value) || (int) $value < 1) {
-            throw new \InvalidArgumentException(
-                "Invalid value for pageLimit: " . var_export($value, true) . ". Must be a positive integer. "
-                . "Use setPageLimit() instead."
+            if (!is_numeric($value) || (int) $value < 1) {
+                throw new \InvalidArgumentException(
+                    "Invalid value for pageLimit: " . var_export($value, true) . ". Must be a positive integer. "
+                    . "Use setPageLimit() instead."
+                );
+            }
+
+            $intValue = (int) $value;
+
+            $this->logNotice(
+                "Deprecated: \$pageLimit was set directly to $intValue on instance '{$this->defConnectionName}'. "
+                . "Use setPageLimit() instead. This compatibility layer will be removed in v1.5.x"
             );
+
+            $this->_pageLimit[$this->defConnectionName] = $intValue;
+            $this->_oldPlWasSet[$this->defConnectionName] = true;
+
+            return;
         }
 
-        $intValue = (int) $value;
-
-        $this->logNotice(
-            "Deprecated: \$pageLimit was set directly to $intValue on instance '{$this->defConnectionName}'. "
-            . "Use setPageLimit() instead. This compatibility layer will be removed in v1.5.x"
-        );
-
-        $this->_pageLimit[$this->defConnectionName] = $intValue;
-        $this->_oldPlWasSet[$this->defConnectionName] = true;
-
-        return;
-    }
-
-    throw new \RuntimeException("Cannot set undefined property: $name");
+        throw new \RuntimeException("Cannot set undefined property: $name");
 }
 
     /**
