@@ -4108,12 +4108,6 @@ final class PDOdb
      */
     protected function _mapResultByKey(array $rows): array|string|object
     {
-        $key = $this->getReturnKey();
-        // Kein Mapping erforderlich
-        if ($key === null) {
-            return $rows;
-        }
-
         $mode = $this->getReturnMode();
         // If return mode is set to 'json' and a returnKey is also defined,
         // the returnKey is considered obsolete. Re-mapping the result set
@@ -4124,6 +4118,13 @@ final class PDOdb
         if ($mode === 'json') {
             return json_encode($rows, JSON_UNESCAPED_UNICODE);
         }
+
+        $key = $this->getReturnKey();
+        // Kein Mapping erforderlich
+        if ($key === null) {
+            return $rows;
+        }
+
         $mapped = [];
         foreach ($rows as $i => $row) {
             if (is_object($row)) {
