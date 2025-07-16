@@ -8,7 +8,7 @@
  * @copyright Copyright (c) 2025 Lucky Fischer
  * @license   https://opensource.org/licenses/MIT MIT License
  * @link      https://github.com/decMuc/PDOdb
- * @version   1.3.3
+ * @version   1.3.4
  * @inspired-by https://github.com/ThingEngineer/PHP-MySQLi-Database-Class
  */
 
@@ -36,313 +36,86 @@ if (!defined('PDOdb_HEURISTIC_WHERE_CHECK')) {
 final class PDOdb
 {
 
-    protected static ?string $_activeInstanceName = 'default';
-    protected static array $_instances = [];
+    // ==[ 01. Connection Management ]==
+    protected static array $_instances = [];                           // All active DB instances
+    protected array $connectionsSettings = [];                         // Connection config per instance
+    protected string $defConnectionName = 'default';                   // Active instance name
+    protected array $pdoConnections = [];                              // PDO handles per instance
+    protected array $_pdo = [];                                        // Legacy internal PDO handles
+    protected $pdo;                                                    // Direct handle (current)
 
-    /**
-     * Table prefix for all queries.
-     *
-     * @var array
-     */
-    private array $prefix = [];
+    // ==[ 02. Public Output & Helpers ]==
 
-    /**
-     * PDO connection instances, indexed by connection name.
-     *
-     * @var \PDO[]
-     */
-    protected array $_pdo = [];
+    public array $trace = [];                                          // Query traces (if enabled)
+    protected array $_returnType = [];                                 // Output format: array, object, json
+    protected array $_returnKey = [];                                  // Result mapping key
+    protected bool $traceEnabled = false;                              // Enable query tracing
+    protected float $traceStartQ = 0.0;                                // Start time for query trace
+    protected string $traceStripPrefix = '';                           // Optional prefix for traces
 
-    protected $pdo;
-    /**
-     * The SQL query that is currently being prepared/executed.
-     *
-     * @var string|null
-     */
-    protected ?string $_query = null;
+    // ==[ 03. SQL Clauses & Conditions ]==
 
-    /**
-     * The last executed SQL query string (with values replaced).
-     *
-     * @var string|null
-     */
-    protected ?string $_lastQuery = null;
+    protected array $_where = [];                                      // WHERE clauses
+    protected array $_join = [];                                       // JOIN statements
+    protected array $_joinAnd = [];                                    // ANDs after JOIN
+    protected array $_joinWheres = [];                                 // WHEREs inside JOIN
+    protected array $_pendingJoins = [];                               // Deferred JOINs
+    protected array $_groupBy = [];                                    // GROUP BY fields
+    protected array $_orderBy = [];                                    // ORDER BY fields
+    protected bool $_nestJoin = false;                                 // Nest results by joined table
+    protected array $_having = [];                                     // HAVING clauses
+    protected array $_pendingHaving = [];                              // Deferred HAVING
+    protected array $_selectAliases = [];                              // Aliases from SELECT (for HAVING)
 
-    /**
-     * Query options for SELECT, INSERT, UPDATE, DELETE (e.g., SQL_CALC_FOUND_ROWS).
-     *
-     * @var array
-     */
-    protected array $_queryOptions = [];
+    // ==[ 04. SQL Query Building ]==
 
-    /**
-     * Array holding join definitions for the current query.
-     *
-     * @var array
-     */
-    protected array $_join = [];
+    protected ?string $_query = null;                                  // Active query string
+    protected ?string $_lastQuery = null;                              // Last executed query
+    protected string $_lastDebugQuery = '';                            // Debug variant of last query
+    protected array $_queryOptions = [];                               // Query flags/options
+    protected array $_bindParams = [];                                 // Bindings for prepared statements
+    protected ?array $_updateColumns = null;                           // ON DUPLICATE KEY UPDATE columns
 
-    /**
-     * Array holding WHERE conditions for the current query.
-     *
-     * @var array
-     */
-    protected array $_where = [];
+    // ==[ 05. Query Helpers & Meta ]==
 
-    /**
-     * Array holding additional AND conditions for joined tables.
-     *
-     * @var array
-     */
-    protected array $_joinAnd = [];
+    protected bool $isSubQuery = false;                                // Is subQuery builder?
+    protected array $_columnCache = [];                                // Column type cache per table
 
-    protected array $_pendingJoins = [];
-    /**
-     * Array holding HAVING conditions for the current query.
-     *
-     * @var array
-     */
-    protected array $_having = [];
+    // ==[ 06. Errors, Locks & Transactions ]==
 
-    /**
-     * Array holding ORDER BY definitions.
-     *
-     * @var array
-     */
-    protected array $_orderBy = [];
+    protected ?string $_stmtError = null;                              // Last error message
+    protected ?string $_stmtErrno = null;                              // Last error code
+    protected $_lastInsertId = null;                                   // Last inserted ID
+    protected array $_tableLocks = [];                                 // Locked tables
+    protected string $_tableLockMethod = "READ";                       // Lock type: READ or WRITE
+    protected bool $_transaction_in_progress = false;                  // Is transaction active?
 
-    /**
-     * Array holding GROUP BY definitions.
-     *
-     * @var array
-     */
-    protected array $_groupBy = [];
+    // ==[ 07. Pagination Support ]==
 
-    /**
-     * Array holding locked tables during table-level locking.
-     *
-     * @var array
-     */
-    protected array $_tableLocks = [];
+    protected array $_pageLimit = [];                                  // Page limits per instance
+    public int $pageLimit = 20;                                        // ⛔ deprecated – use setPageLimit()
+    protected array $_oldPlWasSet = [];                                // Was $pageLimit set directly?
+    protected array $_newPlWasSet = [];                                // Was setPageLimit() used?
+    // ==[ 08. Legacy Result Statistics ]==
+    protected int $count = 0;            // ⛔ deprecated – use getRowCount()
+    protected int $totalCount = 0;       // ⛔ deprecated – use getTotalCount()
+    protected int $totalPages = 0;       // ⛔ deprecated – use getTotalPages()
 
-    /**
-     * Current table lock method ("READ" or "WRITE").
-     *
-     * @var string
-     */
-    protected string $_tableLockMethod = "READ";
+    // ==[ 09. Internal Result State ]==
+    protected int $_count = 0;
+    protected int $_totalCount = 0;
+    protected int $_totalPages = 0;
 
-    /**
-     * Array of parameters and types for the next prepared statement.
-     *
-     * @var array
-     */
-    // protected array $_bindParams = [''];
-    protected array $_bindParams = [];
-    /**
-     * Number of rows returned/affected by the last get/getOne/select.
-     *
-     * @var int
-     */
-    public int $count = 0;
+    // ==[ 09. Debugging & Logging ]==
 
-    /**
-     * Total number of rows matching the last query with SQL_CALC_FOUND_ROWS.
-     *
-     * @var int
-     */
-    public int $totalCount = 0;
+    protected array $_debugLevel = [];                                 // Debug level per instance
 
-    /**
-     * Last statement error message (from PDOStatement).
-     *
-     * @var string|null
-     */
-    protected ?string $_stmtError = null;
+    // ==[ 10. Table Info & Prefixing ]==
 
+    private array $prefix = [];                                        // Table prefix per instance
+    private string $_tableName = '';                                   // Table name (with prefix)
+    protected ?string $_tableAlias = null;                             // Optional table alias
 
-    /**
-     * Last statement error code (from PDOStatement).
-     *
-     * @var string|null
-     */
-    protected ?string $_stmtErrno = null;
-
-    /**
-     * True if this object is being used as a subquery builder.
-     *
-     * @var bool
-     */
-    protected bool $isSubQuery = false;
-
-    /**
-     * Name or index of the last auto-incremented column.
-     *
-     * @var string|int|null
-     */
-    protected $_lastInsertId = null;
-
-
-    protected ?string $_returnKey = null;
-    /**
-     * Columns for ON DUPLICATE KEY UPDATE operations.
-     *
-     * @var array|null
-     */
-    protected ?array $_updateColumns = null;
-
-    /**
-     * Holds the key name for mapping result arrays.
-     * If set, results will be mapped as [$keyValue => $row, ...]
-     * @var string|null
-     */
-    protected ?string $returnKey = null;
-
-    /**
-     * If true, join() results will be nested by table name.
-     *
-     * @var bool
-     */
-    protected bool $_nestJoin = false;
-
-    /**
-     * The table name (with prefix applied).
-     *
-     * @var string
-     */
-    private string $_tableName = '';
-
-    protected ?string $_tableAlias = null;
-    /**
-     * If true, add FOR UPDATE to the query.
-     *
-     * @var bool
-     */
-    protected bool $_forUpdate = false;
-
-    /**
-     * If true, add LOCK IN SHARE MODE to the query.
-     *
-     * @var bool
-     */
-    protected bool $_lockInShareMode = false;
-
-    /**
-     * Key field for use with map() result sets.
-     *
-     * @var string|null
-     */
-    protected ?string $_mapKey = null;
-
-    /**
-     * Microtime of query execution start (for tracing).
-     *
-     * @var float
-     */
-    protected float $traceStartQ = 0.0;
-
-    /**
-     * Enable execution time tracing.
-     *
-     * @var bool
-     */
-    protected bool $traceEnabled = false;
-
-    /**
-     * Optional path prefix to strip from trace logs.
-     *
-     * @var string
-     */
-    protected string $traceStripPrefix = '';
-
-    /**
-     * Query execution trace log (array of [query, duration, caller]).
-     *
-     * @var array
-     */
-    public array $trace = [];
-
-    /**
-     * Rows per page for pagination.
-     *
-     * @var int
-     */
-    public int $pageLimit = 20;
-
-    /**
-     * Total page count for the last paginate() query.
-     *
-     * @var int
-     */
-    public int $totalPages = 0;
-
-    /**
-     * Connection settings for all configured PDO profiles.
-     *
-     * @var array
-     */
-    protected array $connectionsSettings = [];
-
-    /**
-     * Name of the default connection profile.
-     *
-     * @var string
-     */
-    public string $defConnectionName = 'default';
-
-    /**
-     * Enable automatic reconnect on lost connections.
-     *
-     * @var bool
-     */
-    public bool $autoReconnect = true;
-
-    /**
-     * Number of auto-reconnect attempts.
-     *
-     * @var int
-     */
-    protected int $autoReconnectCount = 0;
-
-    /**
-     * Indicates whether a transaction is currently in progress.
-     *
-     * @var bool
-     */
-    protected bool $_transaction_in_progress = false;
-
-    /**
-     * 'array', 'object' oder 'both'
-     */
-    protected string $_returnType = 'array';
-
-    protected array $_joinWheres = [];
-
-    protected int $debugLevel = 0;
-
-    /**
-     * @var array<string, \PDO>
-     */
-    protected array $pdoConnections = [];
-
-    protected array $_pendingHaving = [];
-
-    /**
-     * Extracted aliases from SELECT clause (for HAVING validation).
-     * Populated during get()/page().
-     *
-     * @var array
-     */
-    protected array $_selectAliases = [];
-    /**
-     * Caches table column metadata for the duration of the script.
-     * Format: [ 'table_name' => [ 'column1' => 'int', 'column2' => 'varchar', ... ] ]
-     *
-     * @var array<string, array<string, string>>
-     */
-    protected array $_columnCache = [];
-
-    protected string $_lastDebugQuery;
 
     public function __construct(
         $host = null,
@@ -362,7 +135,15 @@ final class PDOdb
             }
         }
         $this->defConnectionName       = $instance;
-        self::$_activeInstanceName     = $instance;
+
+        // Set standards for instances
+        $this->_debugLevel[$this->defConnectionName] = 0;
+        $this->_pageLimit[$this->defConnectionName] = 20;
+        $this->_oldPlWasSet[$this->defConnectionName] = false;
+        $this->_newPlWasSet[$this->defConnectionName] = false;
+        $this->_returnType[$this->defConnectionName] = 'array';
+        $this->_returnKey[$this->defConnectionName] = null;
+
         // addConnection wird IMMER aufgerufen – auch bei SubQuery
         $this->addConnection($instance, [
             'host'     => $host,
@@ -617,7 +398,7 @@ final class PDOdb
      */
     protected function getPdoFetchMode(): int
     {
-        return match ($this->_returnType) {
+        return match ($this->getReturnMode()) {
             'array', 'json' => \PDO::FETCH_ASSOC,
             'object'        => \PDO::FETCH_OBJ,
             default         => \PDO::FETCH_BOTH
@@ -654,17 +435,26 @@ final class PDOdb
     }
 
     /**
-     * Sets or gets the current debug level.
+     * Sets or gets the current debug level for this instance.
      *
-     * @param int|null $level 0 = silent, 1 = errors, 2 = full query + errors
+     * Levels:
+     *   0 = silent (no debug output)
+     *   1 = log errors only
+     *   2 = log errors + last built query
+     *   3 = full debug (includes exceptions, logs, traces)
+     *
+     * @param int|null $level Set a new debug level (0–3), or null to get the current one.
      * @return int Current debug level
      */
     public function debug(?int $level = null): int
     {
         if ($level !== null) {
-            $this->debugLevel = $level;
+            // Clamp value to range 0–3
+            $level = max(0, min(3, $level));
+            $this->_debugLevel[$this->defConnectionName] = $level;
         }
-        return $this->debugLevel;
+
+        return $this->_debugLevel[$this->defConnectionName] ?? 0;
     }
 
     /**
@@ -776,6 +566,35 @@ final class PDOdb
     }
 
     /**
+     * Returns the number of rows from the last SELECT/GET operation.
+     *
+     * @return int|null  Number of rows, or null if no query has run.
+     */
+    public function getRowCount(): ?int
+    {
+        return $this->_count;
+    }
+
+    /**
+     * Returns the total number of matching rows from the last paginated query.
+     *
+     * @return int|null  Total row count, or null if paginate() was not used.
+     */
+    public function getTotalCount(): ?int
+    {
+        return $this->_totalCount;
+    }
+
+    /**
+     * Returns the total number of pages from the last paginated query.
+     *
+     * @return int|null  Total pages, or null if paginate() was not used.
+     */
+    public function getTotalPages(): ?int
+    {
+        return $this->_totalPages;
+    }
+    /**
      * Checks whether this instance represents a subquery context.
      *
      * @return bool True if this is a subquery, false otherwise
@@ -802,12 +621,14 @@ final class PDOdb
      *   $db->map('id')->get('users');
      *   // returns: [1 => [...], 2 => [...], ...]
      *
+     * This is an alias for setReturnKey().
+     *
      * @param string $idField The field name to use as array key in result set.
      * @return self
      */
     public function map(string $idField): self
     {
-        return $this->setMapKey($idField);
+        return $this->setReturnKey($idField);
     }
 
     /**
@@ -854,10 +675,20 @@ final class PDOdb
      */
     public function setMapKey(?string $key): self
     {
-        $this->_mapKey = $key;
-        return $this;
+        return $this->setReturnKey($key);
     }
 
+    /**
+     * Sets the output format for SELECT results of this connection.
+     *
+     * Valid modes are:
+     * - 'array' (default): returns associative arrays
+     * - 'object': returns stdClass objects
+     * - 'json': prepares array for later JSON encoding
+     *
+     * @param string $mode Output mode: 'array', 'object' or 'json' (case-insensitive)
+     * @return self
+     */
     public function setOutputMode(string $mode): self
     {
         $mode = strtolower(trim($mode));
@@ -865,14 +696,59 @@ final class PDOdb
             case 'json':
             case 'object':
             case 'array':
-                $this->_returnType = $mode;
+                $this->_returnType[$this->defConnectionName] = $mode;
                 break;
             default:
-                $this->_returnType = 'array';
+                $this->_returnType[$this->defConnectionName] = 'array';
         }
         return $this;
     }
 
+    /**
+     * Returns the current output mode for this connection.
+     *
+     * @return string 'array', 'object' or 'json'
+     */
+    protected function getReturnMode(): string
+    {
+        return $this->_returnType[$this->defConnectionName] ?? 'array';
+    }
+
+    /**
+     * Sets the page limit for pagination on the current connection instance.
+     *
+     * This replaces the legacy $pageLimit property with an instance-safe value.
+     *
+     * @param int $limit A positive integer greater than zero.
+     *
+     * @throws \InvalidArgumentException If the value is less than 1.
+     */
+    public function setPageLimit(int $limit): void
+    {
+        if ($limit < 1) {
+            throw new \InvalidArgumentException('Page limit must be greater than zero.');
+        }
+
+        $this->_pageLimit[$this->defConnectionName] = $limit;
+        $this->_newPlWasSet[$this->defConnectionName] = true;
+    }
+
+    protected function getPageLimit(): int
+    {
+        $limit = $this->_pageLimit[$this->defConnectionName] ?? 20;
+
+        if (
+            !($this->_newPlWasSet[$this->defConnectionName] ?? false)
+            && !($this->_oldPlWasSet[$this->defConnectionName] ?? false)
+        ) {
+            $this->logNotice(
+                "Notice: No setPageLimit() or \$pageLimit call on instance '{$this->defConnectionName}'. "
+                . "Using fallback value ($limit). This behavior will be removed in v1.5.x"
+            );
+        }
+
+        return $limit;
+    }
     /**
      * Sets the key for mapping result arrays.
      * If enabled, results will be mapped like [$keyValue => $row, ...]
@@ -882,8 +758,18 @@ final class PDOdb
      */
     public function setReturnKey(?string $key): self
     {
-        $this->_returnKey = $key;
+        $this->_returnKey[$this->defConnectionName] = $key;
         return $this;
+    }
+
+    /**
+     * Returns the current output mode for this connection.
+     *
+     * @return null|string 'key'
+     */
+    protected function getReturnKey(): null|string
+    {
+        return $this->_returnKey[$this->defConnectionName] ?? null;
     }
 
     /**
@@ -2614,7 +2500,7 @@ final class PDOdb
     public function has(string $tableName): bool
     {
         $this->getOne($tableName, '1');
-        return $this->count >= 1;
+        return $this->_count >= 1;
     }
 
     /**
@@ -2726,7 +2612,7 @@ final class PDOdb
             return false;
         }
 
-        $this->count = 0;
+        $this->_count = 0;
 
         $tableName = $this->_secureValidateTable($tableName);
         $prefix = $this->getPrefix();
@@ -2748,7 +2634,7 @@ final class PDOdb
 
             $this->_stmtError = null;
             $this->_stmtErrno = null;
-            $this->count = $stmt->rowCount();
+            $this->_count = $stmt->rowCount();
             return true;
         } catch (\PDOException $e) {
             return $this->handleException($e, 'delete');
@@ -2767,8 +2653,8 @@ final class PDOdb
      */
     public function get(string $tableName, int|array $numRows = null, string|array $columns = '*'): bool|self|array
     {
-        $this->count = 0;
-        $this->totalCount = 0;
+        $this->_count = 0;
+        $this->_totalCount = 0;
 
         $tableName = $this->_secureValidateTable($tableName);
 
@@ -2816,13 +2702,13 @@ final class PDOdb
             $stmt = $pdo->prepare($this->_query);
             $stmt->execute($this->_getBindValues());
 
-            $this->count = $stmt->rowCount();
+            $this->_count = $stmt->rowCount();
             $this->_lastQuery = $this->_replacePlaceHolders($this->_query, $this->_bindParams);
 
             $rows = $stmt->fetchAll($this->getPdoFetchMode());
 
             if (in_array('SQL_CALC_FOUND_ROWS', $this->_queryOptions)) {
-                $this->totalCount = (int) $pdo->query("SELECT FOUND_ROWS()")->fetchColumn();
+                $this->_totalCount = (int) $pdo->query("SELECT FOUND_ROWS()")->fetchColumn();
             }
 
             return $this->_mapResultByKey($rows);
@@ -2899,7 +2785,7 @@ final class PDOdb
      */
     public function insert(string $tableName, array $insertData): int
     {
-        $this->count = 0;
+        $this->_count = 0;
         $tableName = $this->_secureValidateTable($tableName);
         return $this->_buildInsert($tableName, $insertData, 'INSERT');
     }
@@ -2933,7 +2819,7 @@ final class PDOdb
      */
     public function insertMulti(string $tableName, array $multiInsertData, array $dataKeys = null): array|false
     {
-        $this->count = 0;
+        $this->_count = 0;
         // If not already in transaction, wrap in one for safety
         $autoCommit = !$this->_transaction_in_progress;
         $ids = [];
@@ -2995,7 +2881,7 @@ final class PDOdb
      */
     public function insertBulk(string $tableName, array $multiRows): int
     {
-        $this->count = 0;
+        $this->_count = 0;
 
         if (empty($multiRows)) {
             return 0;
@@ -3024,11 +2910,11 @@ final class PDOdb
             $stmt = $pdo->prepare($sql);
             $stmt->execute($bindParams);
 
-            $this->count = $stmt->rowCount();
+            $this->_count = $stmt->rowCount();
             $this->_lastQuery = $this->_replacePlaceHolders($sql, $bindParams);
 
 
-            return $this->count;
+            return $this->_count;
         } catch (\PDOException $e) {
 
             return $this->handleException($e, 'insertBulk');
@@ -3037,35 +2923,31 @@ final class PDOdb
         }
     }
 
-    /**
-     * Pagination wrapper for get() queries.
+     /**
+     * Performs a paginated SELECT query on a given table.
      *
-     * Automatically calculates the correct offset and sets totalPages
-     * based on the total count returned by SQL_CALC_FOUND_ROWS or similar logic.
+     * Automatically calculates the OFFSET based on the current page and page limit.
      *
-     * Example:
-     *   $results = $db->paginate('users', 2, ['id', 'name']);
+     * @param string         $table  The table name.
+     * @param int            $page   The current page number (1-based).
+     * @param array|string   $fields The columns to select (default: ['*']).
      *
-     * @param string       $table  The name of the database table.
-     * @param int          $page   Page number (1-based).
-     * @param array|string $fields Fields to fetch (array or comma-separated string).
+     * @return array Result set for the given page.
      *
-     * @return array Returns result set for the requested page.
-     * @throws \Exception
+     * @throws \RuntimeException If the table name is invalid.
      */
     public function paginate(string $table, int $page, array|string $fields = ['*']): array
     {
-        if (!$this->pageLimit || $this->pageLimit < 1) {
-            throw new \RuntimeException('Invalid page limit. Please set a positive value for $pageLimit.');
-        }
+        $limit = $this->getPageLimit(); // only one access + log fallback if needed
+
         $table = $this->_secureValidateTable($table);
-        $offset = $this->pageLimit * max(0, $page - 1);
+        $offset = $limit * max(0, $page - 1);
 
         $res = $this
             ->withTotalCount()
-            ->get($table, [$offset, $this->pageLimit], $fields);
+            ->get($table, [$offset, $limit], $fields);
 
-        $this->totalPages = (int) ceil($this->totalCount / $this->pageLimit);
+        $this->_totalPages = (int) ceil($this->_totalCount / $limit);
 
         return $res;
     }
@@ -3097,7 +2979,7 @@ final class PDOdb
             $stmt = $pdo->prepare($query);
             $stmt->execute();
 
-            $this->count = $stmt->rowCount();
+            $this->_count = $stmt->rowCount();
             $this->_lastQuery = $query;
 
             $rows = $stmt->fetchAll($this->getPdoFetchMode());
@@ -3141,7 +3023,7 @@ final class PDOdb
      */
     public function replace(string $tableName, array $insertData): int
     {
-        $this->count = 0;
+        $this->_count = 0;
         $tableName = $this->_secureValidateTable($tableName);
         return $this->_buildInsert($tableName, $insertData, 'REPLACE');
     }
@@ -3210,7 +3092,7 @@ final class PDOdb
         if ($this->isSubQuery) {
             return false;
         }
-        $this->count = 0;
+        $this->_count = 0;
 
         $tableName = $this->_secureValidateTable($tableName);
         $this->_query = 'UPDATE ' . $this->getPrefix() . $tableName;
@@ -3220,7 +3102,7 @@ final class PDOdb
             $this->_expandArrayParams();
             $stmt->execute($this->_bindParams);
 
-            $this->count = $stmt->rowCount();
+            $this->_count = $stmt->rowCount();
             $this->_stmtError = null;
             $this->_stmtErrno = null;
 
@@ -3299,7 +3181,7 @@ final class PDOdb
 
             $stmt->execute();
 
-            $this->count = $stmt->rowCount();
+            $this->_count = $stmt->rowCount();
             $this->_stmtError = null;
             $this->_stmtErrno = null;
 
@@ -3307,8 +3189,8 @@ final class PDOdb
 
             return match ($type) {
                 'SELECT', 'SHOW', 'DESCRIBE', 'EXPLAIN' => $this->_mapResultByKey($stmt->fetchAll($this->getPdoFetchMode())),
-                'INSERT'                                => $pdo->lastInsertId() ?: $this->count,
-                'UPDATE', 'DELETE', 'REPLACE'           => $this->count,
+                'INSERT'                                => $pdo->lastInsertId() ?: $this->_count,
+                'UPDATE', 'DELETE', 'REPLACE'           => $this->_count,
                 default                                 => $this->_mapResultByKey($stmt->fetchAll($this->getPdoFetchMode())),
             };
         } catch (\PDOException $e) {
@@ -3684,13 +3566,13 @@ final class PDOdb
             }
             $this->logQuery($this->_query, $this->_bindParams);
             $stmt->execute();
-            $this->count = $stmt->rowCount();
+            $this->_count = $stmt->rowCount();
             $this->_stmtError = null;
             $this->_stmtErrno = null;
 
             $haveOnDuplicate = !empty($this->_updateColumns);
 
-            if ($this->count < 1) {
+            if ($this->_count < 1) {
                 return $haveOnDuplicate ? true : false;
             }
 
@@ -4172,29 +4054,50 @@ final class PDOdb
     }
 
     /**
-     * Maps an array of result rows by the configured mapKey (if set).
-     * If no mapKey is set, returns the array unchanged.
+     * Applies returnKey-based mapping to a result set, if enabled.
      *
-     * @param array $rows List of DB rows (as arrays)
-     * @return array Mapped array if mapKey is set, else original
+     * If returnKey is set and returnMode is not 'json',
+     * the result rows are mapped using the returnKey column as array key
+     * (e.g. ['id' => row, ...]).
+     *
+     * If returnMode is 'json', returnKey is ignored for performance reasons:
+     * the original result is returned as-is (JSON-encoded) without remapping.
+     *
+     * If no returnKey is set, the result is returned unchanged.
+     *
+     * @param array $rows List of DB result rows (array or object entries)
+     * @return array|string|object Remapped result, original rows, or JSON string
+     * @throws \RuntimeException If returnKey is set but not found in a result row
      */
-    protected function _mapResultByKey(array $rows): array
+    protected function _mapResultByKey(array $rows): array|string|object
     {
-        if ($this->_mapKey === null) {
+        $key = $this->getReturnKey();
+        // Kein Mapping erforderlich
+        if ($key === null) {
             return $rows;
         }
 
-        $key = $this->_mapKey;
-        $mapped = [];
-
-        foreach ($rows as $row) {
-            if (isset($row[$key])) {
-                $mapped[$row[$key]] = $row;
-            } else {
-                $mapped[] = $row;
-            }
+        $mode = $this->getReturnMode();
+        // If return mode is set to 'json' and a returnKey is also defined,
+        // the returnKey is considered obsolete. Re-mapping the result set
+        // just to re-encode it into JSON would be inefficient — especially for large datasets.
+        // That would require converting to an array, sorting it by key, and
+        // then converting it back to JSON. This might be refactored in the future,
+        // but for now there's no compelling reason to add this overhead.
+        if ($mode === 'json') {
+            return json_encode($rows, JSON_UNESCAPED_UNICODE);
         }
-
+        $mapped = [];
+        foreach ($rows as $i => $row) {
+            if (is_object($row)) {
+                $row = (array) $row;
+            }
+            if (!array_key_exists($key, $row)) {
+                $this->handleException("ReturnKey '{$key}' not found in result row #{$i}");
+                return $rows;
+            }
+            $mapped[$row[$key]] = $row;
+        }
         return $mapped;
     }
 
@@ -5010,6 +4913,8 @@ final class PDOdb
             $this->_beforeReset();
             $this->_pendingHaving = [];
             $this->_selectAliases = [];
+            $this->_returnKey[$this->defConnectionName] = null;
+            $this->_returnType[$this->defConnectionName] = 'array';
         }
 
         $this->_where = [];
@@ -5023,13 +4928,11 @@ final class PDOdb
         $this->_joinWheres = [];
         $this->_query = null;
         $this->_queryOptions = [];
-        $this->_returnType = 'array';
         $this->_nestJoin = false;
         $this->_forUpdate = false;
         $this->_lockInShareMode = false;
         $this->_tableName = '';
         $this->_updateColumns = null;
-        $this->_mapKey = null;
         $this->_tableAlias = null;
         $this->_stmtError = null;
         $this->_stmtErrno = null;
@@ -5065,9 +4968,22 @@ final class PDOdb
             "() >>  file \"" . str_replace($this->traceStripPrefix, '', $file) . "\" line #" . $line;
     }
 
+    /**
+    * Internal notice logger (always logs).
+    *
+    * Used to log soft warnings like deprecated access
+    * to $pageLimit or fallback behavior.
+    *
+    * @param string $message
+    */
+    protected function logNotice(string $message): void
+    {
+        error_log("[Notice] $message");
+    }
+
     protected function logException(\Throwable $e, ?string $context = null): void
     {
-        if ($this->debugLevel < 1) {
+        if (($this->_debugLevel[$this->defConnectionName] ?? 0) < 1) {
             return;
         }
 
@@ -5083,7 +4999,7 @@ final class PDOdb
 
     protected function logQuery(string $sql, ?array $bindings = null): void
     {
-        if ($this->debugLevel < 2) {
+        if (($this->_debugLevel[$this->defConnectionName] ?? 0) < 2) {
             return;
         }
 
@@ -5100,7 +5016,7 @@ final class PDOdb
         $this->_stmtError = $e->getMessage();
         $this->_stmtErrno = $e->getCode();
 
-        if ($this->debugLevel >= 2 && !empty($this->_query)) {
+        if (($this->_debugLevel[$this->defConnectionName] ?? 0) >= 2 && !empty($this->_query)) {
             $this->logQuery($this->_query, $this->_bindParams ?? null);
         }
 
@@ -5119,6 +5035,59 @@ final class PDOdb
         return '(' . $this->_query . ')';
     }
 
+    public function __set(string $name, mixed $value): void
+    {
+        if ($name === 'pageLimit') {
+
+            if (!is_numeric($value) || (int) $value < 1) {
+                throw new \InvalidArgumentException(
+                    "Invalid value for pageLimit: " . var_export($value, true) . ". Must be a positive integer. "
+                    . "Use setPageLimit() instead."
+                );
+            }
+
+            $intValue = (int) $value;
+
+            $this->logNotice(
+                "Deprecated: \$pageLimit was set directly to $intValue on instance '{$this->defConnectionName}'. "
+                . "Use setPageLimit() instead. This compatibility layer will be removed in v1.5.x"
+            );
+
+            $this->_pageLimit[$this->defConnectionName] = $intValue;
+            $this->_oldPlWasSet[$this->defConnectionName] = true;
+
+            return;
+        }
+
+        throw new \RuntimeException("Cannot set undefined property: $name");
+    }
+
+    /**
+     * Magic getter to support deprecated public access like $db->count.
+     * Triggers a notice but still returns the correct value.
+     *
+     * @param string $name
+     * @return mixed|null
+     */
+    public function __get(string $name): mixed
+    {
+        switch ($name) {
+            case 'count':
+                $this->logNotice("Deprecated: Accessing \$count directly on instance '{$this->defConnectionName}' is discouraged. Use getRowCount() instead. This will be removed in v1.5.x.");
+                return $this->getRowCount();
+
+            case 'totalCount':
+                $this->logNotice("Deprecated: Accessing \$totalCount directly on instance '{$this->defConnectionName}' is discouraged. Use getTotalCount() instead. This will be removed in v1.5.x.");
+                return $this->getTotalCount();
+
+            case 'totalPages':
+                $this->logNotice("Deprecated: Accessing \$totalPages directly on instance '{$this->defConnectionName}' is discouraged. Use getTotalPages() instead. This will be removed in v1.5.x.");
+                return $this->getTotalPages();
+
+            default:
+                return null;
+        }
+    }
     public function getLastDebugQuery(): string
     {
         return $this->_lastDebugQuery;
