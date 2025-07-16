@@ -4,8 +4,8 @@
  *
  * @category  Database Access
  * @package   decMuc\PDOdb
- * @author    Lucky Fischer
- * @copyright Copyright (c) 2025 Lucky Fischer
+ * @author    L. Fischer
+ * @copyright Copyright (c) 2025 L. Fischer
  * @license   https://opensource.org/licenses/MIT MIT License
  * @link      https://github.com/decMuc/PDOdb
  * @version   1.3.4
@@ -2686,9 +2686,9 @@ final class PDOdb
      * @param string         $tableName  The table to query (prefix is applied automatically).
      * @param int|array|null $numRows    Limit as [offset, count] or just count.
      * @param string|array   $columns    Columns to select (default: '*').
-     * @return bool|self|array Returns result set or false on failure.
+     * @return bool|self|array|string Returns result set or false on failure, string for json return
      */
-    public function get(string $tableName, int|array $numRows = null, string|array $columns = '*'): bool|self|array
+    public function get(string $tableName, int|array $numRows = null, string|array $columns = '*'): bool|self|array|string
     {
         $this->_count = 0;
         $this->_totalCount = 0;
@@ -2763,18 +2763,20 @@ final class PDOdb
      *
      * @param string       $tableName The table name.
      * @param string|array $columns   Columns to select (default: '*').
-     * @return array|null             The first row as array, or null if none found.
+     * @return array|null|string      The first row as array, or JSON string if output mode is 'json'
      */
-    public function getOne(string $tableName, string|array $columns = '*'): ?array
+    public function getOne(string $tableName, string|array $columns = '*'): array|string|null
     {
         $res = $this->get($tableName, 1, $columns);
 
-        // TODO: Das muss ich noch ändern, wenn ich das Ausgabeformat individuell setzen will!!
         if (is_array($res)) {
-            // Return first element regardless of numeric or associative keys
             foreach ($res as $row) {
                 return $row;
             }
+        }
+
+        if (is_string($res)) {
+            return $res;
         }
 
         return null;
@@ -2792,6 +2794,11 @@ final class PDOdb
      */
     public function getValue(string $tableName, string $column, ?int $limit = 1): mixed
     {
+        if ($this->getReturnMode() === 'json') {
+            $this->reset(true);
+            throw new \RuntimeException("getValue() does not support JSON return mode.");
+        }
+
         $res = $this->arrayBuilder()->get($tableName, $limit, "{$column} AS retval");
 
         if (empty($res)) {
@@ -2992,12 +2999,12 @@ final class PDOdb
     /**
      * Executes a SELECT query, with optional LIMIT/OFFSET, and returns the result rows.
      *
-     * @param string $query The SQL query (should be a SELECT statement).
-     * @param int|array|null $numRows Optional LIMIT or [offset, count] array.
-     * @return bool|array Result rows (may be mapped if returnKey is set).
+     * @param string          $query   The SQL query (should be a SELECT statement).
+     * @param int|array|null  $numRows Optional LIMIT or [offset, count] array.
+     * @return bool|array|string Result rows (may be mapped or JSON if returnMode is 'json').
      * @throws \PDOException On query error.
      */
-    public function query(string $query, int|array $numRows = null): bool|array
+    public function query(string $query, int|array $numRows = null): bool|array|string
     {
         try {
 
@@ -4116,7 +4123,7 @@ final class PDOdb
         // then converting it back to JSON. This might be refactored in the future,
         // but for now there's no compelling reason to add this overhead.
         if ($mode === 'json') {
-            return json_encode($rows, JSON_UNESCAPED_UNICODE);
+            return json_encode($rows, JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE);
         }
 
         $key = $this->getReturnKey();
