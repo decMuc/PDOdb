@@ -1679,10 +1679,7 @@ final class PDOdb
             throw new \InvalidArgumentException("whereNotIn() expects a non-empty array.");
         }
 
-        $placeholders = implode(', ', array_fill(0, count($values), '?'));
-        $operator = "NOT IN ($placeholders)";
-
-        return $this->secureWhere($field, $values, $operator, 'AND');
+        return $this->secureWhere($field, $values, 'NOT IN', 'AND');
     }
 
     /**
@@ -1976,16 +1973,8 @@ final class PDOdb
             throw new \InvalidArgumentException("orWhereNotIn() expects a non-empty array.");
         }
 
-        $placeholders = implode(', ', array_fill(0, count($values), '?'));
-        $operator = "NOT IN ($placeholders)";
-
-        return $this->secureWhere($field, $values, $operator, 'OR');
+        return $this->secureWhere($field, $values, "NOT IN", 'OR');
     }
-
-
-
-
-
 
     /**
      * Adds an OR WHERE condition with safe string handling.
@@ -2102,7 +2091,6 @@ final class PDOdb
             $e = new \InvalidArgumentException("Unsafe WHERE clause rejected: {$column} {$operator}");
             $this->logException($e, "secureWhere [column={$column} operator={$operator}]");
             throw $e;
-
         }
 
         // Frühzeitige Prüfung auf verdächtige skalare Werte
@@ -3376,7 +3364,7 @@ final class PDOdb
         $this->_query .= ' ' . $operator . ' ';
 
         foreach ($conditions as [$cond, $column, $comparison, $value]) {
-            $this->_query .= $cond ? "{$cond} " : '';
+            $this->_query .= $cond ? " {$cond} " : '';
             $useTicks = !($operator === 'HAVING' && preg_match('/^[A-Z]+\(.+\)$/i', $column));
             $this->_query .= $useTicks ? $this->_addTicks($column) : $column;
             $comp = strtoupper(trim($comparison));
