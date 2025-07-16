@@ -1416,42 +1416,52 @@ final class PDOdb
 
         return $this->secureWhere($column, (bool)$value ? 1 : 0, $operator, 'AND');
     }
+
     /**
-     * Adds a WHERE condition for date or datetime columns.
+     * Adds a WHERE condition for a single date value (e.g. =, <, >).
+     * Accepts Y-m-d, Y-m-d H:i:s, or 10-digit timestamps.
      *
-     * Accepts strings in 'Y-m-d' or 'Y-m-d H:i:s' format,
-     * or a valid 10-digit UNIX timestamp (converted internally).
-     *
-     * @param string $column   The column name to compare.
-     * @param mixed  $value    Date string or UNIX timestamp.
-     * @param string $operator Comparison operator (default '=').
-     *
-     * @return self          Fluent interface for chaining.
-     * @throws \InvalidArgumentException If the value is not a valid date, datetime, or timestamp.
+     * @param string $column   The column name to filter
+     * @param mixed  $value    A date string or timestamp
+     * @param string $operator Optional SQL operator (default '=')
+     * @return self
      */
-    public function whereDate(string $column, mixed $value, string $operator = '='):self
+    public function whereDate(string $column, mixed $value, string $operator = '='): self
     {
-        if (!is_scalar($value)) {
-            throw new \InvalidArgumentException("Non-scalar date value for column '{$column}'.");
-        }
+        $date = $this->_secureValidateAndFormatDate($value);
+        return $this->secureWhere($column, $date, $operator, 'AND');
+    }
 
-        $str = (string)$value;
+    /**
+     * Adds a WHERE condition to filter between two dates (inclusive).
+     *
+     * @param string $column     The column name to filter
+     * @param mixed  $fromDate   Start date (string or timestamp)
+     * @param mixed  $toDate     End date (string or timestamp)
+     * @return self
+     */
+    public function whereDateBetween(string $column, mixed $fromDate, mixed $toDate): self
+    {
+        $from = $this->_secureValidateAndFormatDate($fromDate);
+        $to   = $this->_secureValidateAndFormatDate($toDate);
 
-        // Accept 'Y-m-d' or 'Y-m-d H:i:s'
-        if (
-            \DateTime::createFromFormat('Y-m-d', $str) === false &&
-            \DateTime::createFromFormat('Y-m-d H:i:s', $str) === false
-        ) {
-            // Accept 10-digit UNIX timestamps only
-            if (!preg_match('/^\d{10}$/', $str)) {
-                throw new \InvalidArgumentException("Invalid date or datetime format for column '{$column}': '{$str}'");
-            }
+        return $this->secureWhere($column, [$from, $to], 'BETWEEN', 'AND');
+    }
 
-            // Convert timestamp to 'Y-m-d H:i:s'
-            $str = date('Y-m-d H:i:s', (int)$str);
-        }
+    /**
+     * Adds a WHERE condition to exclude a date range (NOT BETWEEN).
+     *
+     * @param string $column     The column name to filter
+     * @param mixed  $fromDate   Start date (string or timestamp)
+     * @param mixed  $toDate     End date (string or timestamp)
+     * @return self
+     */
+    public function whereDateNotBetween(string $column, mixed $fromDate, mixed $toDate): self
+    {
+        $from = $this->_secureValidateAndFormatDate($fromDate);
+        $to   = $this->_secureValidateAndFormatDate($toDate);
 
-        return $this->secureWhere($column, $str, $operator, 'AND');
+        return $this->secureWhere($column, [$from, $to], 'NOT BETWEEN', 'AND');
     }
 
     /**
@@ -1770,37 +1780,49 @@ final class PDOdb
     }
 
     /**
-     * Adds an OR WHERE condition for date or datetime columns.
+     * Adds an OR WHERE condition for a single date value.
      *
-     * Same validation rules as `whereDate()`.
-     *
-     * @param string $column   The column name to compare.
-     * @param mixed  $value    Date string or UNIX timestamp.
-     * @param string $operator Comparison operator (default '=').
-     *
-     * @return self          Fluent interface for chaining.
-     * @throws \InvalidArgumentException If the value is invalid.
+     * @param string $column   The column name to filter
+     * @param mixed  $value    A date string or timestamp
+     * @param string $operator Optional SQL operator (default '=')
+     * @return self
      */
-    public function orWhereDate(string $column, mixed $value, string $operator = '='):self
+    public function orWhereDate(string $column, mixed $value, string $operator = '='): self
     {
-        if (!is_scalar($value)) {
-            throw new \InvalidArgumentException("Non-scalar date value for column '{$column}'.");
-        }
+        $date = $this->_secureValidateAndFormatDate($value);
+        return $this->secureWhere($column, $date, $operator, 'OR');
+    }
 
-        $str = (string)$value;
+    /**
+     * Adds an OR WHERE condition to filter between two dates.
+     *
+     * @param string $column     The column name to filter
+     * @param mixed  $fromDate   Start date (string or timestamp)
+     * @param mixed  $toDate     End date (string or timestamp)
+     * @return self
+     */
+    public function orWhereDateBetween(string $column, mixed $fromDate, mixed $toDate): self
+    {
+        $from = $this->_secureValidateAndFormatDate($fromDate);
+        $to   = $this->_secureValidateAndFormatDate($toDate);
 
-        if (
-            \DateTime::createFromFormat('Y-m-d', $str) === false &&
-            \DateTime::createFromFormat('Y-m-d H:i:s', $str) === false
-        ) {
-            if (!preg_match('/^\d{10}$/', $str)) {
-                throw new \InvalidArgumentException("Invalid date or datetime format for column '{$column}': '{$str}'");
-            }
+        return $this->secureWhere($column, [$from, $to], 'BETWEEN', 'OR');
+    }
 
-            $str = date('Y-m-d H:i:s', (int)$str);
-        }
+    /**
+     * Adds an OR WHERE condition to exclude a date range (NOT BETWEEN).
+     *
+     * @param string $column     The column name to filter
+     * @param mixed  $fromDate   Start date (string or timestamp)
+     * @param mixed  $toDate     End date (string or timestamp)
+     * @return self
+     */
+    public function orWhereDateNotBetween(string $column, mixed $fromDate, mixed $toDate): self
+    {
+        $from = $this->_secureValidateAndFormatDate($fromDate);
+        $to   = $this->_secureValidateAndFormatDate($toDate);
 
-        return $this->secureWhere($column, $str, $operator, 'OR');
+        return $this->secureWhere($column, [$from, $to], 'NOT BETWEEN', 'OR');
     }
 
     /**
@@ -2753,8 +2775,18 @@ final class PDOdb
      * @param string|array $columns   Columns to select (default: '*').
      * @return array|null|string      The first row as array, or JSON string if output mode is 'json'
      */
-    public function getOne(string $tableName, string|array $columns = '*'): array|string|null
+    public function getOne(string $tableName, string|array $columns = '*'): array|string|bool
     {
+        if ($this->isSubQuery) {
+            $this->reset(true);
+            throw new \LogicException("getOne() must not be called inside a subQuery() context.");
+        }
+
+        if (!is_string($columns) && !is_array($columns)) {
+            $this->reset(true);
+            throw new \InvalidArgumentException("Invalid \$columns argument for getOne(): must be string or array.");
+        }
+
         $res = $this->get($tableName, 1, $columns);
 
         if (is_array($res)) {
@@ -2767,7 +2799,7 @@ final class PDOdb
             return $res;
         }
 
-        return null;
+        return false;
     }
 
     /**
@@ -4729,6 +4761,39 @@ final class PDOdb
         }
 
         return $result;
+    }
+
+    /**
+     * Validates a date string or timestamp and returns a normalized 'Y-m-d H:i:s' format.
+     * Triggers reset(true) on invalid values.
+     *
+     * @param mixed $input Date string or 10-digit timestamp.
+     * @return string      Validated and normalized date string.
+     * @throws \InvalidArgumentException
+     */
+    protected function _secureValidateAndFormatDate(mixed $input): string
+    {
+        if (!is_scalar($input)) {
+            $this->reset(true);
+            throw new \InvalidArgumentException("Non-scalar date value.");
+        }
+
+        $str = (string) $input;
+
+        // Convert timestamp to datetime
+        if (preg_match('/^\d{10}$/', $str)) {
+            $str = date('Y-m-d H:i:s', (int)$str);
+        }
+
+        foreach (['Y-m-d', 'Y-m-d H:i:s'] as $format) {
+            $dt = \DateTime::createFromFormat($format, $str);
+            if ($dt && $dt->format($format) === $str) {
+                return $str;
+            }
+        }
+
+        $this->reset(true);
+        throw new \InvalidArgumentException("Invalid date or datetime: '{$str}'");
     }
 
     /**
