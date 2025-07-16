@@ -91,8 +91,8 @@ final class PDOdb
     protected ?string $_stmtErrno = null;                              // Last error code
     protected $_lastInsertId = null;                                   // Last inserted ID
     protected array $_tableLocks = [];                                 // Locked tables
-    protected string $_tableLockMethod = "READ";                       // Lock type: READ or WRITE
-    protected bool $_transaction_in_progress = false;                  // Is transaction active?
+    protected array $_tableLockMethod = [];                       // Lock type: READ or WRITE
+    protected array $_transaction_in_progress = [];                   // Is transaction active?
     protected bool $_lockInShareMode = false;
     // ==[ 07. Pagination Support ]==
 
@@ -147,6 +147,10 @@ final class PDOdb
         $this->_newPlWasSet[$this->defConnectionName] = false;
         $this->_returnType[$this->defConnectionName] = 'array';
         $this->_returnKey[$this->defConnectionName] = null;
+
+        $this->_tableLocks[$this->defConnectionName] = [];
+        $this->_tableLockMethod[$this->defConnectionName] = 'READ';
+        $this->_transaction_in_progress[$this->defConnectionName] = false;
 
         // addConnection wird IMMER aufgerufen – auch bei SubQuery
         $this->addConnection($instance, [
@@ -1053,9 +1057,20 @@ final class PDOdb
      */
     public function lock(string|array $table): bool
     {
+
+        if ($this->isSubQuery) {
+            $this->reset(true);
+            throw new \LogicException("Cannot use lock() inside a subquery instance.");
+        }
+
+        if (!empty($this->_tableLocks[$this->defConnectionName])) {
+            $this->reset(true);
+            throw new \LogicException("Cannot call lock() multiple times per session. Use unlock() first.");
+        }
+
         $prefix = $this->getPrefix();
         $this->_query = "LOCK TABLES ";
-        $this->_tableLocks = [];
+        $this->_tableLocks[$this->defConnectionName] = [];
 
         $parts = [];
 
@@ -1067,8 +1082,8 @@ final class PDOdb
 
                 try {
                     $validated = $this->_secureValidateTable($value);
-                    $parts[] = $prefix . $validated . ' ' . $this->_tableLockMethod;
-                    $this->_tableLocks[] = $validated;
+                    $parts[] = $prefix . $validated . ' ' . $this->_tableLockMethod[$this->defConnectionName];
+                    $this->_tableLocks[$this->defConnectionName][] = $validated;
                 } catch (\Throwable $e) {
                     $this->_unlockOnFailure();
                     $this->_beforeReset();
@@ -1079,8 +1094,8 @@ final class PDOdb
         } else {
             try {
                 $validated = $this->_secureValidateTable($table);
-                $this->_query .= $prefix . $validated . ' ' . $this->_tableLockMethod;
-                $this->_tableLocks[] = $validated;
+                $this->_query .= $prefix . $validated . ' ' . $this->_tableLockMethod[$this->defConnectionName];
+                $this->_tableLocks[$this->defConnectionName][] = $validated;
             } catch (\Throwable $e) {
                 $this->_unlockOnFailure();
                 $this->_beforeReset();
@@ -1107,13 +1122,15 @@ final class PDOdb
 
     protected function _unlockOnFailure(): void
     {
-        if (!empty($this->_tableLocks)) {
+        if (!empty($this->_tableLocks[$this->defConnectionName])) {
             try {
                 $this->queryUnprepared('UNLOCK TABLES');
             } catch (\Throwable $e) {
                 $this->logException($e, 'unlock failure');
             } finally {
-                $this->_tableLocks = [];
+                $this->_tableLockMethod[$this->defConnectionName] = 'READ';
+                $this->_tableLocks[$this->defConnectionName] = [];
+                $this->reset(true);
             }
         }
     }
@@ -1129,8 +1146,9 @@ final class PDOdb
     {
         $method = strtoupper($method);
         if ($method === 'READ' || $method === 'WRITE') {
-            $this->_tableLockMethod = $method;
+            $this->_tableLockMethod[$this->defConnectionName] = $method;
         } else {
+            $this->reset(true);
             throw new \InvalidArgumentException("Invalid lock type: must be either 'READ' or 'WRITE'.");
         }
 
@@ -1186,10 +1204,18 @@ final class PDOdb
      */
     public function unlock(): self
     {
+        if ($this->isSubQuery) {
+            $this->_unlockOnFailure();
+            $this->reset(true);
+            throw new \LogicException("Cannot unlock() inside a subquery instance.");
+        }
+
         $this->_query = "UNLOCK TABLES";
 
         try {
             $result = $this->queryUnprepared($this->_query);
+            $this->_tableLockMethod[$this->defConnectionName] = 'READ';
+            $this->_tableLocks[$this->defConnectionName] = [];
             $this->reset();
 
             if ($result) {
@@ -1198,6 +1224,7 @@ final class PDOdb
                 throw new \Exception("Unlocking tables failed.");
             }
         } catch (\Exception $e) {
+            $this->_unlockOnFailure();
             $this->reset(true);
             throw $e;
         }
@@ -1282,7 +1309,7 @@ final class PDOdb
             throw new \RuntimeException("Unable to begin transaction");
         }
 
-        $this->_transaction_in_progress = true;
+        $this->_transaction_in_progress[$this->defConnectionName] = true;
     }
 
     /**
@@ -1302,7 +1329,7 @@ final class PDOdb
             throw new \Exception("Transaction commit failed");
         }
 
-        $this->_transaction_in_progress = false;
+        $this->_transaction_in_progress[$this->defConnectionName] = false;
     }
 
     /**
@@ -1318,11 +1345,17 @@ final class PDOdb
             throw new \Exception("No active transaction to rollback");
         }
 
-        if (!$pdo->rollBack()) {
-            throw new \Exception("Transaction rollback failed");
-        }
+        try {
+            if (!$pdo->rollBack()) {
+                throw new \Exception("Transaction rollback failed");
+            }
 
-        $this->_transaction_in_progress = false;
+            $this->_transaction_in_progress[$this->defConnectionName] = false;
+        } catch (\Throwable $e) {
+            $this->_transaction_in_progress[$this->defConnectionName] = false;
+            $this->reset(true);
+            throw $e;
+        }
     }
 
     /**
@@ -1332,7 +1365,7 @@ final class PDOdb
     protected function _transaction_status_check(): void
     {
         try {
-            if ($this->_transaction_in_progress) {
+            if ($this->_transaction_in_progress[$this->defConnectionName]) {
                 $this->rollback();
             }
         } catch (\Throwable $e) {
@@ -2825,7 +2858,7 @@ final class PDOdb
     {
         $this->_count = 0;
         // If not already in transaction, wrap in one for safety
-        $autoCommit = !$this->_transaction_in_progress;
+        $autoCommit = !$this->_transaction_in_progress[$this->defConnectionName];
         $ids = [];
 
         if ($autoCommit) {
