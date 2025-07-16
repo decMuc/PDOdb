@@ -5040,31 +5040,31 @@ final class PDOdb
     }
 
     public function __set(string $name, mixed $value): void
-    {
-        if ($name === 'pageLimit') {
+{
+    if ($name === 'pageLimit') {
 
-            if (!is_numeric($value) || (int) $value < 1) {
-                throw new \InvalidArgumentException(
-                    "Invalid value for pageLimit: " . var_export($value, true) . ". Must be a positive integer. "
-                    . "Use setPageLimit() instead."
-                );
-            }
-
-            $intValue = (int) $value;
-
-            $this->logNotice(
-                "Deprecated: \$pageLimit was set directly to $intValue on instance '{$this->defConnectionName}'. "
-                . "Use setPageLimit() instead. This compatibility layer will be removed in v1.5.x"
+        if (!is_numeric($value) || (int) $value < 1) {
+            throw new \InvalidArgumentException(
+                "Invalid value for pageLimit: " . var_export($value, true) . ". Must be a positive integer. "
+                . "Use setPageLimit() instead."
             );
-
-            $this->_pageLimit[$this->defConnectionName] = $intValue;
-            $this->_oldPlWasSet[$this->defConnectionName] = true;
-
-            return;
         }
 
-        throw new \RuntimeException("Cannot set undefined property: $name");
+        $intValue = (int) $value;
+
+        $this->logNotice(
+            "Deprecated: \$pageLimit was set directly to $intValue on instance '{$this->defConnectionName}'. "
+            . "Use setPageLimit() instead. This compatibility layer will be removed in v1.5.x"
+        );
+
+        $this->_pageLimit[$this->defConnectionName] = $intValue;
+        $this->_oldPlWasSet[$this->defConnectionName] = true;
+
+        return;
     }
+
+    throw new \RuntimeException("Cannot set undefined property: $name");
+}
 
     /**
      * Magic getter to support deprecated public access like $db->count.
