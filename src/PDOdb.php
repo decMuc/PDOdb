@@ -40,6 +40,8 @@ final class PDOdb
     protected static array $_instances = [];                           // All active DB instances
     protected array $connectionsSettings = [];                         // Connection config per instance
     protected string $defConnectionName = 'default';                   // Active instance name
+    protected int $autoReconnectCount = 0;
+    public bool $autoReconnect = true;
     protected array $pdoConnections = [];                              // PDO handles per instance
     protected array $_pdo = [];                                        // Legacy internal PDO handles
     protected $pdo;                                                    // Direct handle (current)
@@ -76,6 +78,8 @@ final class PDOdb
     protected array $_bindParams = [];                                 // Bindings for prepared statements
     protected ?array $_updateColumns = null;                           // ON DUPLICATE KEY UPDATE columns
 
+    protected bool $_forUpdate = false;
+
     // ==[ 05. Query Helpers & Meta ]==
 
     protected bool $isSubQuery = false;                                // Is subQuery builder?
@@ -89,7 +93,7 @@ final class PDOdb
     protected array $_tableLocks = [];                                 // Locked tables
     protected string $_tableLockMethod = "READ";                       // Lock type: READ or WRITE
     protected bool $_transaction_in_progress = false;                  // Is transaction active?
-
+    protected bool $_lockInShareMode = false;
     // ==[ 07. Pagination Support ]==
 
     protected array $_pageLimit = [];                                  // Page limits per instance
