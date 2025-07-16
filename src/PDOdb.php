@@ -2097,7 +2097,7 @@ final class PDOdb
             $opUpper = '=';
         }
 
-        if (!$this->_secureIsSafeColumn($column) || !$this->_secureIsAllowedOperator($operator)) {
+        if (!$this->_secureIsSafeColumn($column) || !$this->_secureIsAllowedOperator($opUpper)) {
             $this->reset(true);
             $e = new \InvalidArgumentException("Unsafe WHERE clause rejected: {$column} {$operator}");
             $this->logException($e, "secureWhere [column={$column} operator={$operator}]");
