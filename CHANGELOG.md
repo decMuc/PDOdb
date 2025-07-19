@@ -26,7 +26,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Cleaned up `_buildQuery()` structure and reset behavior
 - Improved logging via `logQuery()` and `logException()` in all query types
 
+### ⚠️ Deprecated (to be removed in v1.5.0)
 
+- `$db->pageLimit`  
+  → use `setPageLimit()` instead (instance-safe)
+
+- `$db->map`  
+  → use `setReturnKey()` instead
+
+- `$db->arrayBuilder()`, `$db->objectBuilder()`, `$db->jsonBuilder()`  
+  → use `setOutputMode('array' | 'object' | 'json')` instead
+
+- `$db->escape()`  
+  → remains a non-functional dummy and may be removed in a future version
+
+- Static global instance via `getInstance()`  
+  → use named instances via `getInstance('your_name')` instead
 ---
 
 ## [1.3.3] – 2025-07-14
