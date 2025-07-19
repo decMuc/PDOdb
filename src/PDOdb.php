@@ -62,6 +62,7 @@ final class PDOdb
     protected array $_joinAnd = [];                                    // ANDs after JOIN
     protected array $_joinWheres = [];                                 // WHEREs inside JOIN
     protected array $_pendingJoins = [];                               // Deferred JOINs
+    protected array $_joinAliases = [];                                 // JOIN Aliases
     protected array $_groupBy = [];                                    // GROUP BY fields
     protected array $_orderBy = [];                                    // ORDER BY fields
     protected bool $_nestJoin = false;                                 // Nest results by joined table
@@ -85,6 +86,7 @@ final class PDOdb
     protected bool $isSubQuery = false;                                // Is subQuery builder?
     protected array $_columnCache = [];                                // Column type cache per table
 
+    protected array $_checkBulkInput = [];                             // Check flag per connection
     // ==[ 06. Errors, Locks & Transactions ]==
 
     protected ?string $_stmtError = null;                              // Last error message
@@ -147,7 +149,7 @@ final class PDOdb
         $this->_newPlWasSet[$this->defConnectionName] = false;
         $this->_returnType[$this->defConnectionName] = 'array';
         $this->_returnKey[$this->defConnectionName] = null;
-
+        $this->_checkBulkInput[$this->defConnectionName] = null;
         $this->_tableLocks[$this->defConnectionName] = [];
         $this->_tableLockMethod[$this->defConnectionName] = 'READ';
         $this->_transaction_in_progress[$this->defConnectionName] = false;
@@ -502,6 +504,23 @@ final class PDOdb
      *     return substr($quoted, 1, -1);
      * }
      */
+
+    /**
+     * Enables or disables strict validation for insertBulk().
+     *
+     * If enabled (true), the insertBulk() method will reject any input rows that contain:
+     * - Special SQL markers like [F], [I], [N]
+     * - Subquery objects (implementing getSubQuery())
+     *
+     * This is disabled by default for performance reasons.
+     * Enable only if you expect dynamic or user-provided values.
+     *
+     * @param bool $state True to enable, false to disable
+     */
+    public function enableBulkCheck(bool $state = true): void
+    {
+        $this->_checkBulkInput[$this->defConnectionName] = $state;
+    }
 
     public function getTableName(): string
     {
@@ -2431,6 +2450,7 @@ final class PDOdb
     }
 
     // Having
+
     /**
      * Adds a HAVING condition to the SQL query, with optional operator and logical chaining (AND).
      *
@@ -2443,11 +2463,12 @@ final class PDOdb
      * $db->having('SUM(score)', 10, '>')->orHaving('COUNT(id)', 'DBNOTNULL');
      * ```
      *
-     * @param string $column   Column or expression for the HAVING clause.
-     * @param mixed  $value    Value to compare against, or special string like 'DBNULL'.
+     * @param string $column Column or expression for the HAVING clause.
+     * @param mixed $value Value to compare against, or special string like 'DBNULL'.
      * @param string $operator Comparison operator (default '=').
      *
      * @return self          Fluent interface for chaining.
+     * @throws \Throwable
      */
     public function having(string $column, mixed $value = null, string $operator = '='):self
     {
@@ -2457,11 +2478,12 @@ final class PDOdb
     /**
      * Adds a HAVING condition to the SQL query, with optional operator and logical chaining (OR).
      *
-     * @param string $column   Column or expression for the HAVING clause.
-     * @param mixed  $value    Value to compare against, or special string like 'DBNULL'.
+     * @param string $column Column or expression for the HAVING clause.
+     * @param mixed $value Value to compare against, or special string like 'DBNULL'.
      * @param string $operator Comparison operator (default '=').
      *
      * @return self          Fluent interface for chaining.
+     * @throws \Throwable
      */
     public function orHaving(string $column, mixed $value = null, string $operator = '='):self
     {
@@ -2738,6 +2760,7 @@ final class PDOdb
      * @param string $groupByField The database field or expression to group by.
      *
      * @return static Returns the current instance for method chaining.
+     * @throws \Throwable
      */
     public function groupBy(string $groupByField): self
     {
@@ -2755,6 +2778,7 @@ final class PDOdb
      *
      * @return bool True if at least one matching record exists, false otherwise.
      * @throws \Exception If an error occurs during the query.
+     * @throws \Throwable
      */
     public function has(string $tableName): bool
     {
@@ -2871,11 +2895,12 @@ final class PDOdb
     /**
      * Performs a DELETE query. Be sure to call "where" beforehand.
      *
-     * @param string       $tableName Name of the database table.
+     * @param string $tableName Name of the database table.
      * @param int|array|null $numRows Optional limit for the number of rows to delete.
      *
      * @return bool True on success, false on failure.
      * @throws \Exception When used inside a subquery context.
+     * @throws \Throwable
      */
     public function delete(string $tableName, int|array|null $numRows = null): bool
     {
@@ -2886,21 +2911,13 @@ final class PDOdb
         $this->_count = 0;
 
         $tableName = $this->_secureValidateTable($tableName);
-        $prefix = $this->getPrefix();
-        $table = $prefix . $tableName;
-
-        if (count($this->_join) > 0) {
-            $tableAlias = preg_replace('/.* (.*)/', '$1', $table);
-            $this->_query = "DELETE {$tableAlias} FROM {$table}";
-        } else {
-            $this->_query = "DELETE FROM {$table}";
-        }
+        $this->_tableName = $this->getPrefix() . $tableName;
+        $this->_query = 'DELETE';
 
         try {
             $stmt = $this->_buildQuery($numRows);
 
             $this->logQuery($this->_query, $this->_bindParams);
-
             $stmt->execute();
 
             $this->_stmtError = null;
@@ -2917,10 +2934,11 @@ final class PDOdb
     /**
      * Performs a SELECT query on a given table.
      *
-     * @param string         $tableName  The table to query (prefix is applied automatically).
-     * @param int|array|null $numRows    Limit as [offset, count] or just count.
-     * @param string|array   $columns    Columns to select (default: '*').
+     * @param string $tableName The table to query (prefix is applied automatically).
+     * @param int|array|null $numRows Limit as [offset, count] or just count.
+     * @param string|array $columns Columns to select (default: '*').
      * @return bool|self|array|string Returns result set or false on failure, string for json return
+     * @throws \Throwable
      */
     public function get(string $tableName, int|array $numRows = null, string|array $columns = '*'): bool|self|array|string
     {
@@ -3087,11 +3105,13 @@ final class PDOdb
      * @return int Inserted row ID (if auto-increment), or 1 if no auto-increment column exists.
      * @throws \PDOException on failure.
      * @throws \Exception
+     * @throws \Throwable
      */
     public function insert(string $tableName, array $insertData): int
     {
         $this->_count = 0;
         $tableName = $this->_secureValidateTable($tableName);
+        $insertData = $this->_secureValidateInsertValues($insertData);
         return $this->_buildInsert($tableName, $insertData, 'INSERT');
     }
 
@@ -3106,10 +3126,12 @@ final class PDOdb
      * @return int                Returns the last insert ID, or 1 if no auto-increment column is used.
      * @throws \RuntimeException  If the insert fails due to subquery context or preparation error.
      * @throws \Exception
+     * @throws \Throwable
      */
     protected function insertMultis(string $tableName, array $insertData): int
     {
         $tableName = $this->_secureValidateTable($tableName);
+        $insertData = $this->_secureValidateInsertValues($insertData);
         return $this->_buildInsert($tableName, $insertData, 'INSERT');
     }
 
@@ -3181,13 +3203,37 @@ final class PDOdb
      * Performs a bulk insert with multiple rows in a single query.
      *
      * @param string $tableName Name of the table.
-     * @param array $multiRows  Array of associative arrays, each representing a row.
+     * @param array $multiRows Array of associative arrays, each representing a row.
      * @return int Number of rows inserted.
-     *
-     * @throws \Throwable If an error occurs during the insert operation (caught and passed to handleException).
+     * @throws \PDOException on failure.
+     * @throws \Throwable
      */
     public function insertBulk(string $tableName, array $multiRows): int
     {
+        // Check for illegal values like [F]/[I]/[N] or Subqueries
+        if ($this->_checkBulkInput[$this->defConnectionName]){
+            foreach ($multiRows as $row) {
+                foreach ($row as $value) {
+                    if (is_array($value)) {
+                        $key = array_key_first($value);
+                        if (in_array($key, ['[F]', '[I]', '[N]'], true)) {
+                            $this->reset(true);
+                            throw $this->handleException(
+                                new \Exception("insertBulk() does not support special values like [F], [I], [N]."),
+                                'insertBulk'
+                            );
+                        }
+                    } elseif (is_object($value) && method_exists($value, 'getSubQuery')) {
+                        $this->reset(true);
+                        throw $this->handleException(
+                            new \Exception("insertBulk() does not support subqueries."),
+                            'insertBulk'
+                        );
+                    }
+                }
+            }
+        }
+
         $this->_count = 0;
 
         if (empty($multiRows)) {
@@ -3234,13 +3280,14 @@ final class PDOdb
      *
      * Automatically calculates the OFFSET based on the current page and page limit.
      *
-     * @param string         $table  The table name.
-     * @param int            $page   The current page number (1-based).
-     * @param array|string   $fields The columns to select (default: ['*']).
+     * @param string $table The table name.
+     * @param int $page The current page number (1-based).
+     * @param array|string $fields The columns to select (default: ['*']).
      *
      * @return array Result set for the given page.
      *
      * @throws \RuntimeException If the table name is invalid.
+     * @throws \Throwable
      */
     public function paginate(string $table, int $page, array|string $fields = ['*']): array
     {
@@ -3259,17 +3306,12 @@ final class PDOdb
     }
 
     /**
-     * Executes a raw SELECT query with optional LIMIT support.
+     * Executes a SELECT query, with optional LIMIT/OFFSET, and returns the result rows.
      *
-     * If $numRows is provided, appends a LIMIT clause to the query.
-     * - If an integer is given, it is used as the row count.
-     * - If an array [offset, count] is given, it is used as LIMIT offset, count.
-     *
-     * @param string          $query    The raw SQL query to execute.
-     * @param int|array|null  $numRows  Optional limit: integer or [offset, count].
-     * @return array|string|bool        The result set mapped according to return mode, or false on failure.
-     *
-     * @throws \Throwable If the query fails and the debug level is >= 1.
+     * @param string          $query   The SQL query (should be a SELECT statement).
+     * @param int|array|null  $numRows Optional LIMIT or [offset, count] array.
+     * @return bool|array|string Result rows (may be mapped or JSON if returnMode is 'json').
+     * @throws \PDOException On query error.
      */
     public function query(string $query, int|array $numRows = null): bool|array|string
     {
@@ -3331,11 +3373,13 @@ final class PDOdb
      *
      * @return int Returns the last insert ID on success or 0/1 as status.
      * @throws \Exception Throws exception on failure.
+     * @throws \Throwable
      */
     public function replace(string $tableName, array $insertData): int
     {
         $this->_count = 0;
         $tableName = $this->_secureValidateTable($tableName);
+        $insertData = $this->_secureValidateInsertValues($insertData);
         return $this->_buildInsert($tableName, $insertData, 'REPLACE');
     }
 
@@ -3395,14 +3439,14 @@ final class PDOdb
     /**
      * Performs an UPDATE query. Call "where" before to specify conditions.
      *
-     * @param string     $tableName Name of the table.
-     * @param array      $tableData Associative array of column => value pairs.
-     * @param int|null   $numRows   Optional limit on the number of rows to update.
+     * @param string $tableName Name of the table.
+     * @param array $insertData Associative array of column => value pairs.
+     * @param int|null $numRows Optional limit on the number of rows to update.
      *
      * @return bool True on success, false on failure.
      * @throws \Throwable If the query fails and the debug level is >= 1.
      */
-    public function update(string $tableName, array $tableData, ?int $numRows = null): bool
+    public function update(string $tableName, array $insertData, ?int $numRows = null): bool
     {
         if ($this->isSubQuery) {
             return false;
@@ -3410,10 +3454,13 @@ final class PDOdb
         $this->_count = 0;
 
         $tableName = $this->_secureValidateTable($tableName);
-        $this->_query = 'UPDATE ' . $this->getPrefix() . $tableName;
+        $insertData = $this->_secureValidateInsertValues($insertData);
+
+        $this->_tableName = $this->getPrefix() . $tableName;
+        $this->_query = 'UPDATE ' . $this->_tableName;
 
         try {
-            $stmt = $this->_buildQuery($numRows, $tableData);
+            $stmt = $this->_buildQuery($numRows, $insertData);
             $this->_expandArrayParams();
             $stmt->execute($this->_bindParams);
 
@@ -3428,7 +3475,6 @@ final class PDOdb
             $this->reset(true);
         }
     }
-
 
     // Raw
 
@@ -3545,10 +3591,11 @@ final class PDOdb
      * - Otherwise, returns an array of values from the first column of each row.
      * Similar to getValue().
      *
-     * @param string $query       SQL query to execute (can use ? or named placeholders).
+     * @param string $query SQL query to execute (can use ? or named placeholders).
      * @param array|null $bindParams Parameters to bind (positional or named).
      * @return mixed Single value (if LIMIT 1) or array of values (otherwise), or null if no result.
      * @throws \PDOException on error.
+     * @throws \Throwable
      */
     public function rawQueryValue(string $query, ?array $bindParams = null): mixed
     {
@@ -3898,14 +3945,44 @@ final class PDOdb
         }
 
         $prefix = $this->getPrefix();
-        $table = $prefix . $tableName;
+        $table  = $prefix . $tableName;
+        $columns = [];
+        $placeholders = [];
+        $this->_bindParams = [];
 
-        $columns = implode(', ', array_map([$this, '_addTicks'], array_keys($insertData)));
-        $placeholders = implode(', ', array_fill(0, count($insertData), '?'));
-        $options = !empty($this->_queryOptions) ? implode(' ', $this->_queryOptions) . ' ' : '';
+        foreach ($insertData as $col => $val) {
+            $columns[] = $this->_addTicks($col);
 
-        $this->_query = sprintf('%s %sINTO %s (%s) VALUES (%s)', $operation, $options, $table, $columns, $placeholders);
-        $this->_bindParams = array_values($insertData);
+            // Sonderwert: [F], [I], [N]
+            if (is_array($val) && count($val) === 1) {
+                $key = array_key_first($val);
+                if (in_array($key, ['[F]', '[I]', '[N]'], true)) {
+                    $expr = $val[$key];
+                    if (is_array($expr)) {
+                        $placeholders[] = implode(', ', array_map('trim', $expr));
+                    } else {
+                        $placeholders[] = trim($expr);
+                    }
+                    continue;
+                }
+            }
+
+            // Subquery-Objekt
+            if (is_object($val) && method_exists($val, 'getSubQuery')) {
+                $placeholders[] = (string) $val;
+                continue;
+            }
+
+            // Normalwert → gebindet
+            $placeholders[] = '?';
+            $this->_bindParams[] = $val;
+        }
+
+        $columnsStr     = implode(', ', $columns);
+        $placeholdersStr = implode(', ', $placeholders);
+        $options        = !empty($this->_queryOptions) ? implode(' ', $this->_queryOptions) . ' ' : '';
+
+        $this->_query = sprintf('%s %sINTO %s (%s) VALUES (%s)', $operation, $options, $table, $columnsStr, $placeholdersStr);
 
         if (!empty($this->_updateColumns)) {
             $this->_buildOnDuplicate($insertData);
@@ -3922,8 +3999,10 @@ final class PDOdb
                     $stmt->bindValue($idx + 1, $value);
                 }
             }
+
             $this->logQuery($this->_query, $this->_bindParams);
             $stmt->execute();
+
             $this->_count = $stmt->rowCount();
             $this->_stmtError = null;
             $this->_stmtErrno = null;
@@ -3931,12 +4010,12 @@ final class PDOdb
             $haveOnDuplicate = !empty($this->_updateColumns);
 
             if ($this->_count < 1) {
-                return $haveOnDuplicate ? true : false;
+                return (bool)$haveOnDuplicate;
             }
 
             return ($operation === 'INSERT' && $pdo->lastInsertId()) ? (int) $pdo->lastInsertId() : true;
 
-        } catch (\PDOException $e) {
+        } catch (\Exception $e) {
             return $this->handleException($e, '_buildInsert');
         } finally {
             $this->reset(true);
@@ -3953,7 +4032,6 @@ final class PDOdb
      * @throws \RuntimeException If the current query type is not recognized.
      * @throws \Exception|\Throwable On internal query formatting issues.
      */
-
     protected function _buildInsertQuery(?array $tableData): void
     {
         if (empty($tableData)) {
@@ -4003,6 +4081,7 @@ final class PDOdb
      * This method is called internally when assembling the final SQL query.
      *
      * @return void
+     * @throws \Throwable
      */
     protected function _buildJoin(): void
     {
@@ -4015,6 +4094,18 @@ final class PDOdb
                 $joinStr = $this->_buildPair('', $joinTable);
             } else {
                 $joinStr = $joinTable;
+
+                // Alias extrahieren und in _joinAliases speichern
+                if (preg_match('/^(\w+)\s+(\w+)$/', trim($joinTable), $m)) {
+                    // e.g. "orders o"
+                    $tableName = $m[1];
+                    $alias     = $m[2];
+                    $this->_joinAliases[$tableName] = $alias;
+                } elseif (preg_match('/^(\w+)$/', trim($joinTable), $m)) {
+                    // e.g. "users"
+                    $tableName = $m[1];
+                    $this->_joinAliases[$tableName] = $tableName;
+                }
             }
 
             $this->_query .= " {$joinType} JOIN {$joinStr}";
@@ -4236,31 +4327,41 @@ final class PDOdb
      */
     protected function _buildQuery(int|array|null $numRows = null, array $tableData = null): \PDOStatement|string
     {
-
-        $this->_buildInsertQuery($tableData);
-
-
+        // Tabellenname + JOINs vorbereiten
         $this->_buildTable();
         $this->_buildJoin();
-
+        // Build INSERT/UPDATE SET-Teil, wenn $tableData gesetzt
+        $this->_buildInsertQuery($tableData);
+        // WHERE prüfen + aufbauen
         $this->_secureSanitizeWhere($this->_where);
         $this->_buildCondition('WHERE', $this->_where);
-        $this->_buildGroupBy();
 
-        if (!empty($this->_pendingHaving)) {
-            if (empty($this->_selectAliases)) {
-                $selectClause = $this->_extractSelectClause($this->_query);
-                $this->_selectAliases = $this->_extractAliasesFromSelect($selectClause);
+        // Nur bei SELECT: GROUP BY, HAVING, ORDER BY
+        $isSelect = str_starts_with(trim($this->_query), 'SELECT');
+
+        if ($isSelect) {
+            $this->_buildGroupBy();
+
+            if (!empty($this->_pendingHaving)) {
+                if (empty($this->_selectAliases)) {
+                    $selectClause = $this->_extractSelectClause($this->_query);
+                    $this->_selectAliases = $this->_extractAliasesFromSelect($selectClause);
+                }
+                $this->_secureSanitizeHaving($this->_pendingHaving, $this->_selectAliases);
+                $this->_pendingHaving = [];
             }
-            $this->_secureSanitizeHaving($this->_pendingHaving, $this->_selectAliases);
-            $this->_pendingHaving = [];
+
+            $this->_buildCondition('HAVING', $this->_having);
+            $this->_buildOrderBy();
         }
 
-        $this->_buildCondition('HAVING', $this->_having);
-        $this->_buildOrderBy();
+        // LIMIT für alle Querytypen erlaubt (auch UPDATE/DELETE)
         $this->_buildLimit($numRows);
+
+        // ON DUPLICATE nur bei INSERT relevant
         $this->_buildOnDuplicate($tableData);
 
+        // Lock-Modi bei SELECT
         if ($this->_forUpdate) {
             $this->_query .= ' FOR UPDATE';
         }
@@ -4268,12 +4369,15 @@ final class PDOdb
             $this->_query .= ' LOCK IN SHARE MODE';
         }
 
+        // Debug: Query mit Werten speichern
         $this->_lastQuery = $this->_replacePlaceHolders($this->_query, $this->_bindParams);
 
+        // Subqueries geben nur SQL zurück, kein Statement
         if ($this->isSubQuery) {
             return $this->_query;
         }
 
+        // Statement vorbereiten
         try {
             $pdo = $this->connect($this->defConnectionName);
             $stmt = $pdo->prepare($this->_query);
@@ -5202,6 +5306,83 @@ final class PDOdb
     }
 
     /**
+     * Validates insert/update/replace values for correctness and safety.
+     *
+     * Allowed:
+     * - Scalar values (int, string, float, bool, null)
+     * - Special array values: ['[F]'=>..., '[I]'=>..., '[N]'=>...]
+     * - Subquery objects with getSubQuery()
+     *
+     * @param array $insertData Associative array of column => value
+     * @param string $context   Internal context like 'insert' or 'replace' for error messages
+     * @return array            Validated and potentially transformed values
+     * @throws \Exception|\Throwable       On invalid structure or unsafe values
+     */
+    protected function _secureValidateInsertValues(array $insertData, string $context = 'insert'): array
+    {
+        $validated = [];
+
+        foreach ($insertData as $col => $val) {
+            if (!$this->_secureIsSafeColumn($col)) {
+                $this->reset(true);
+                throw $this->handleException(
+                    new \InvalidArgumentException("Unsafe column name '{$col}' in {$context}()"),
+                    $context
+                );
+            }
+
+            // Subquery object?
+            if (is_object($val) && method_exists($val, 'getSubQuery')) {
+                $validated[$col] = $val;
+                continue;
+            }
+
+            // Special values like [F], [I], [N]
+            if (is_array($val) && count($val) === 1) {
+                $key = array_key_first($val);
+
+                if (in_array($key, ['[F]', '[I]', '[N]'], true)) {
+                    $inner = $val[$key];
+
+                    if (is_array($inner)) {
+                        foreach ($inner as $entry) {
+                            if (!is_string($entry) || !preg_match('/^[A-Z0-9_ ()+\-*\/.]+$/i', $entry)) {
+                                $this->reset(true);
+                                throw $this->handleException(
+                                    new \Exception("Invalid value in '{$key}' for column '{$col}' in {$context}()"),
+                                    $context
+                                );
+                            }
+                        }
+                    } elseif (!is_string($inner) || !preg_match('/^[A-Z0-9_ ()+\-*\/.]+$/i', $inner)) {
+                        $this->reset(true);
+                        throw $this->handleException(
+                            new \Exception("Invalid value in '{$key}' for column '{$col}' in {$context}()"),
+                            $context
+                        );
+                    }
+
+                    $validated[$col] = [$key => $inner];
+                    continue;
+                }
+            }
+
+            // Allow only scalar values
+            if (!is_scalar($val) && $val !== null) {
+                $this->reset(true);
+                throw $this->handleException(
+                    new \Exception("Invalid non-scalar value for column '{$col}' in {$context}()"),
+                    $context
+                );
+            }
+
+            $validated[$col] = $val;
+        }
+
+        return $validated;
+    }
+
+    /**
      * Validates a table name to ensure it only contains allowed characters.
      *
      * @param string $tableName The table name to validate.
@@ -5478,6 +5659,7 @@ final class PDOdb
         $this->_bindParams = [];
         $this->_pendingJoins = [];
         $this->_joinWheres = [];
+        $this->_joinAliases = [];
         $this->_query = null;
         $this->_queryOptions = [];
         $this->_nestJoin = false;
@@ -5489,6 +5671,7 @@ final class PDOdb
         $this->_stmtError = null;
         $this->_stmtErrno = null;
         $this->autoReconnectCount = 0;
+        $this->_checkBulkInput[$this->defConnectionName] = false;
 
         return $this;
     }
