@@ -2912,7 +2912,7 @@ final class PDOdb
 
         $tableName = $this->_secureValidateTable($tableName);
         $this->_tableName = $this->getPrefix() . $tableName;
-        $this->_query = 'DELETE';
+        $this->_query = 'DELETE FROM ' . $this->_tableName . ' ';
 
         try {
             $stmt = $this->_buildQuery($numRows);
