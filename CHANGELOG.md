@@ -6,6 +6,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
+## [1.3.4] – 2025-07-19
+
+### Fixed
+- Fixed `delete()` query bug causing `DELETE WHERE ...` without table name
+- Resolved fatal exception when calling `where() + delete()`
+
+### Added
+- Full support for `[F]`, `[I]`, `[N]` placeholders in `insert()`, `update()`, `replace()`
+- Subquery validation and alias extraction
+- New central `_secureValidateInsertValues()` for value safety
+
+### Changed
+- `secureWhere()`: stronger validation (aggregates, suspicious input, function safety)
+- Improved `setPageLimit()`, `getReturnKey()` – now instance-safe
+- Query debug tracking (`_lastDebugQuery`) activated even on errors
+
+### Internal
+- Cleaned up `_buildQuery()` structure and reset behavior
+- Improved logging via `logQuery()` and `logException()` in all query types
+
+
+---
 
 ## [1.3.3] – 2025-07-14
 
