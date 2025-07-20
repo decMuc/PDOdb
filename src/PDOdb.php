@@ -571,7 +571,7 @@ final class PDOdb
         $cnt  = $this->_queryCounter[$conn] ?? 0;
 
         if (isset($this->_errorStore[$conn]) && $this->_errorStore[$conn]['count'] === $cnt){
-            return "CNT:".$cnt." -> ".$this->_errorStore[$conn]['error'] ?? null;
+            return $this->_errorStore[$conn]['error'] ?? null;
         }
         return null;
     }
