@@ -38,6 +38,7 @@ $user = $db->getOne('users');
 
 ---
 
-## License
+## 📝 License / Lizenz
 
-MIT © [decmuc](https://github.com/decmuc)
+
+This project is licensed under the MIT License. See [LICENSE](LICENSE) for details
