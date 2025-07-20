@@ -107,7 +107,7 @@ final class PDOdb
     protected array $_oldPlWasSet = [];                                // Was $pageLimit set directly?
     protected array $_newPlWasSet = [];                                // Was setPageLimit() used?
     // ==[ 08. Legacy Result Statistics ]==
-    protected int $count = 0;                                           // ⛔ deprecated – use getRowCount()
+    protected int $count = 0;                                           // ⛔ deprecated – use getRowCount() or getCount()
     protected int $totalCount = 0;                                      // ⛔ deprecated – use getTotalCount()
     protected int $totalPages = 0;                                      // ⛔ deprecated – use getTotalPages()
 
