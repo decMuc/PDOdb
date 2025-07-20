@@ -8,7 +8,7 @@
  * @copyright Copyright (c) 2025 L. Fischer
  * @license   https://opensource.org/licenses/MIT MIT License
  * @link      https://github.com/decMuc/PDOdb
- * @version   1.3.4
+ * @version   1.3.5
  * @inspired-by https://github.com/ThingEngineer/PHP-MySQLi-Database-Class
  */
 
@@ -91,6 +91,10 @@ final class PDOdb
 
     protected ?string $_stmtError = null;                              // Last error message
     protected ?string $_stmtErrno = null;                              // Last error code
+    protected array $_errorStore = [];                                  // Error storage
+    protected array $_manualErrorSet = [];
+    protected array $_batchMode = [];
+    protected array $_queryCounter = [];                                // Query error counter
     protected $_lastInsertId = null;                                   // Last inserted ID
     protected array $_tableLocks = [];                                 // Locked tables
     protected array $_tableLockMethod = [];                       // Lock type: READ or WRITE
@@ -123,6 +127,9 @@ final class PDOdb
     protected ?string $_tableAlias = null;                             // Optional table alias
 
 
+    /**
+     * @throws \Throwable
+     */
     public function __construct(
         $host = null,
         $username = null,
@@ -153,7 +160,10 @@ final class PDOdb
         $this->_tableLocks[$this->defConnectionName] = [];
         $this->_tableLockMethod[$this->defConnectionName] = 'READ';
         $this->_transaction_in_progress[$this->defConnectionName] = false;
-
+        $this->_errorStore[$this->defConnectionName] = null;
+        $this->_queryCounter[$this->defConnectionName] = 0;
+        $this->_manualErrorSet[$this->defConnectionName] = false;
+        $this->_batchMode[$this->defConnectionName] = false;
         // addConnection wird IMMER aufgerufen – auch bei SubQuery
         $this->addConnection($instance, [
             'host'     => $host,
@@ -486,6 +496,7 @@ final class PDOdb
      *
      * @param string $str Input string.
      * @return string The input string untouched.
+     * @deprecated Will be removed in v1.5.x – use rawQuery() instead.
      */
     public function escape(string $str): string
     {
@@ -556,19 +567,29 @@ final class PDOdb
      */
     public function getLastError(): null|string
     {
-        return isset($this->_stmtError) && $this->_stmtError !== ''
-            ? trim($this->_stmtError)
-            : null;
+        $conn = $this->defConnectionName;
+        $cnt  = $this->_queryCounter[$conn] ?? 0;
+
+        if (isset($this->_errorStore[$conn]) && $this->_errorStore[$conn]['count'] === $cnt){
+            return "CNT:".$cnt." -> ".$this->_errorStore[$conn]['error'] ?? null;
+        }
+        return null;
     }
 
     /**
      * Returns the last error code from the executed PDO statement.
      *
-     * @return int PDO error code, or 0 if none.
+     * @return int|null PDO error code, or 0 if none.
      */
-    public function getLastErrno(): int
+    public function getLastErrno(): null|int
     {
-        return $this->_stmtErrno ?? 0;
+        $conn = $this->defConnectionName;
+        $cnt  = $this->_queryCounter[$conn] ?? 0;
+
+        if (isset($this->_errorStore[$conn]) && $this->_errorStore[$conn]['count'] === $cnt){
+            return $this->_errorStore[$conn]['code'] ?? null;
+        }
+        return null;
     }
 
     /**
@@ -578,16 +599,27 @@ final class PDOdb
      * If the database driver does not support this feature or the call fails, an exception is thrown.
      *
      * @return string The last inserted ID as a string (even for numeric auto-increments).
-     * @throws \PDOException If the underlying PDO call fails.
+     * @throws \Throwable If the underlying PDO call fails.
      */
     public function getInsertId(): string
     {
         try {
             $pdo = $this->connect($this->defConnectionName);
             return $pdo->lastInsertId();
-        } catch (\PDOException $e) {
+        } catch (\Throwable $e) {
             $this->handleException($e, 'getInsertID');
         }
+    }
+
+    /**
+     * Returns the number of rows from the last SELECT/GET operation.
+     * Short Alias to getRowCount()
+     *
+     * @return int|null  Number of rows, or null if no query has run.
+     */
+    public function getCount(): ?int
+    {
+        return $this->_count;
     }
 
     /**
@@ -597,7 +629,7 @@ final class PDOdb
      */
     public function getRowCount(): ?int
     {
-        return $this->_count;
+        return $this->getCount();
     }
 
     /**
@@ -650,6 +682,7 @@ final class PDOdb
      *
      * @param string $idField The field name to use as array key in result set.
      * @return self
+     * @deprecated Will be removed in v1.5.x – use rawQuery() instead.
      */
     public function map(string $idField): self
     {
@@ -1365,21 +1398,24 @@ final class PDOdb
      * Commits the current transaction.
      *
      * @throws \Exception if no transaction is active or commit fails.
+     * @throws \Throwable
      */
     public function commit(): void
     {
         $pdo = $this->connect($this->defConnectionName);
 
         if (!$pdo->inTransaction()) {
-            $this->_stmtError = "No active transaction to commit";
-            $this->_stmtErrno = 0;
-            throw new \Exception("No active transaction to commit");
+            $this->handleException(
+                new \Exception("No active transaction to commit"),
+                'commit'
+            );
         }
 
         if (!$pdo->commit()) {
-            $this->_stmtError = "Transaction commit failed";
-            $this->_stmtErrno = 0;
-            throw new \Exception("Transaction commit failed");
+            $this->handleException(
+                new \Exception("Transaction commit failed"),
+                'commit'
+            );
         }
 
         $this->_transaction_in_progress[$this->defConnectionName] = false;
@@ -1389,29 +1425,32 @@ final class PDOdb
      * Rolls back the current transaction.
      *
      * @throws \Exception if no transaction is active or rollback fails.
+     * @throws \Throwable
      */
     public function rollback(): void
     {
         $pdo = $this->connect($this->defConnectionName);
 
         if (!$pdo->inTransaction()) {
-            $this->_stmtError = "No active transaction to rollback";
-            $this->_stmtErrno = 0;
-            throw new \Exception("No active transaction to rollback");
+            $this->handleException(
+                new \Exception("No active transaction to rollback."),
+                'rollback'
+            );
         }
 
         try {
             if (!$pdo->rollBack()) {
-                $this->_stmtError = "Transaction rollback failed";
-                $this->_stmtErrno = 0;
-                throw new \Exception("Transaction rollback failed");
+                $this->handleException(
+                    new \Exception("Transaction rollback failed."),
+                    'rollback'
+                );
             }
 
             $this->_transaction_in_progress[$this->defConnectionName] = false;
         } catch (\Throwable $e) {
             $this->_transaction_in_progress[$this->defConnectionName] = false;
             $this->reset(true);
-            throw $e;
+            $this->handleException($e, 'rollback');
         }
     }
 
@@ -1640,6 +1679,10 @@ final class PDOdb
 
         return $this->secureWhere($column, $tmp, $operator, 'AND');
     }
+
+    /**
+     * @throws \Throwable
+     */
     public function whereIntIn(string $column, array $values): self
     {
 
@@ -2920,9 +2963,8 @@ final class PDOdb
             $this->logQuery($this->_query, $this->_bindParams);
             $stmt->execute();
 
-            $this->_stmtError = null;
-            $this->_stmtErrno = null;
             $this->_count = $stmt->rowCount();
+            $this->countQuery();
             return true;
         } catch (\PDOException $e) {
             return $this->handleException($e, 'delete');
@@ -2995,10 +3037,8 @@ final class PDOdb
             $this->_count = $stmt->rowCount();
             $error = $stmt->errorInfo();
             if (!empty($error[1])) {
-                $this->_stmtError = '[Exception] ' . $error[2];
-                $this->_stmtErrno = $error[1];
-                $this->logException(new \PDOException($error[2], (int)$error[1]), 'get');
-                return false;
+                $e = new \PDOException($error[2], (int)$error[1]);
+                $this->handleException($e, 'get');
             }
             $rows = $stmt->fetchAll($this->getPdoFetchMode());
 
@@ -3046,14 +3086,16 @@ final class PDOdb
 
         if (is_array($res)) {
             foreach ($res as $row) {
+                $this->countQuery();
                 return $row;
             }
         }
 
         if (is_string($res)) {
+            $this->countQuery();
             return $res;
         }
-
+        $this->countQuery();
         return false;
     }
 
@@ -3081,11 +3123,13 @@ final class PDOdb
         $res = $this->arrayBuilder()->get($tableName, $limit, "{$column} AS retval");
 
         if (empty($res)) {
+            $this->countQuery();
             return null;
         }
 
         if ($limit === 1) {
             $first = reset($res);
+            $this->countQuery();
             return $first['retval'] ?? null;
         }
 
@@ -3093,7 +3137,7 @@ final class PDOdb
         foreach ($res as $row) {
             $values[] = $row['retval'] ?? null;
         }
-
+        $this->countQuery();
         return $values;
     }
 
@@ -3147,7 +3191,11 @@ final class PDOdb
      */
     public function insertMulti(string $tableName, array $multiInsertData, array $dataKeys = null): array|false
     {
+        $this->_stmtError = null;
+        $this->_stmtErrno = null;
         $this->_count = 0;
+
+        $this->_batchMode[$this->defConnectionName] = true;
         // If not already in transaction, wrap in one for safety
         $autoCommit = !$this->_transaction_in_progress[$this->defConnectionName];
         $ids = [];
@@ -3166,6 +3214,7 @@ final class PDOdb
                         if ($autoCommit) {
                             $this->rollback();
                         }
+                        $this->setManualLastErrors();
                         return false;
                     }
                 }
@@ -3174,6 +3223,7 @@ final class PDOdb
                     if ($autoCommit) {
                         $this->rollback();
                     }
+                    $this->setManualLastErrors();
                     return false;
                 }
             }
@@ -3181,11 +3231,10 @@ final class PDOdb
             $id = $this->insertMultis($tableName, $insertData);
             if (!$id) {
                 $this->_stmtError = $this->_stmtError ?? "insertMulti(): insert() failed.";
-
-                $this->_stmtError .= " | " . $this->getLastError();
                 if ($autoCommit) {
                     $this->rollback();
                 }
+                $this->setManualLastErrors();
                 return false;
             }
 
@@ -3195,7 +3244,7 @@ final class PDOdb
         if ($autoCommit) {
             $this->commit();
         }
-
+        $this->countQuery();
         return $ids;
     }
 
@@ -3237,6 +3286,7 @@ final class PDOdb
         $this->_count = 0;
 
         if (empty($multiRows)) {
+            $this->countQuery();
             return 0;
         }
         $tableName = $this->_secureValidateTable($tableName);
@@ -3266,7 +3316,7 @@ final class PDOdb
             $this->_count = $stmt->rowCount();
             $this->_lastQuery = $this->_replacePlaceHolders($sql, $bindParams);
 
-
+            $this->countQuery();
             return $this->_count;
         } catch (\Throwable $e) {
             return $this->handleException($e, 'insertBulk');
@@ -3301,7 +3351,6 @@ final class PDOdb
             ->get($table, [$offset, $limit], $fields);
 
         $this->_totalPages = (int) ceil($this->_totalCount / $limit);
-
         return $res;
     }
 
@@ -3312,6 +3361,8 @@ final class PDOdb
      * @param int|array|null  $numRows Optional LIMIT or [offset, count] array.
      * @return bool|array|string Result rows (may be mapped or JSON if returnMode is 'json').
      * @throws \PDOException On query error.
+     * @deprecated Will be removed in v1.5.x – use rawQuery() instead.
+     *
      */
     public function query(string $query, int|array $numRows = null): bool|array|string
     {
@@ -3467,7 +3518,7 @@ final class PDOdb
             $this->_count = $stmt->rowCount();
             $this->_stmtError = null;
             $this->_stmtErrno = null;
-
+            $this->countQuery();
             return true;
         } catch (\PDOException $e) {
             return $this->handleException($e, 'update');
@@ -3574,15 +3625,22 @@ final class PDOdb
      * @throws \PDOException on error.
      * @throws \Throwable
      */
-    public function rawQueryOne(string $query, array $bindParams = null): array|false
+    public function rawQueryOne(string $query, array $bindParams = null): mixed
     {
+        $query .= ' LIMIT 1';
+
         $res = $this->rawQuery($query, $bindParams);
 
-        if ($res === false || !is_array($res) || !isset($res[0]) || !is_array($res[0])) {
+        if ($res === false || (is_array($res) && count($res) === 0)) {
             return false;
         }
 
-        return $res[0];
+        if (is_string($res)) {
+            // OutputMode: json
+            return $res;
+        }
+
+        return $res[0] ?? false;
     }
 
     /**
@@ -4010,9 +4068,10 @@ final class PDOdb
             $haveOnDuplicate = !empty($this->_updateColumns);
 
             if ($this->_count < 1) {
+                $this->countQuery();
                 return (bool)$haveOnDuplicate;
             }
-
+            $this->countQuery();
             return ($operation === 'INSERT' && $pdo->lastInsertId()) ? (int) $pdo->lastInsertId() : true;
 
         } catch (\Exception $e) {
@@ -4032,6 +4091,7 @@ final class PDOdb
      * @throws \RuntimeException If the current query type is not recognized.
      * @throws \Exception|\Throwable On internal query formatting issues.
      */
+
     protected function _buildInsertQuery(?array $tableData): void
     {
         if (empty($tableData)) {
@@ -4571,12 +4631,14 @@ final class PDOdb
         // then converting it back to JSON. This might be refactored in the future,
         // but for now there's no compelling reason to add this overhead.
         if ($mode === 'json') {
+            $this->countQuery();
             return json_encode($rows, JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE);
         }
 
         $key = $this->getReturnKey();
         // Kein Mapping erforderlich
         if ($key === null) {
+            $this->countQuery();
             return $rows;
         }
 
@@ -4594,6 +4656,7 @@ final class PDOdb
             }
             $mapped[$row[$key]] = $row;
         }
+        $this->countQuery();
         return $mapped;
     }
 
@@ -5648,6 +5711,8 @@ final class PDOdb
             $this->_returnType[$this->defConnectionName] = 'array';
             $this->_oldPlWasSet[$this->defConnectionName] = false;
             $this->_newPlWasSet[$this->defConnectionName] = false;
+            $this->_manualErrorSet[$this->defConnectionName] = false;
+            $this->_batchMode[$this->defConnectionName] = false;
         }
 
         $this->_where = [];
@@ -5745,6 +5810,55 @@ final class PDOdb
 
     }
 
+    protected function countQuery(): void
+    {
+        $conn = $this->defConnectionName;
+
+        if (
+            !($this->_manualErrorSet[$conn] ?? false) &&
+            !($this->_batchMode[$conn] ?? false)
+        ) {
+            if (!isset($this->_queryCounter[$conn])) {
+                $this->_queryCounter[$conn] = 0;
+            }
+            $this->_queryCounter[$conn]++;
+        }
+    }
+
+    protected function setManualLastErrors(): void
+    {
+        $this->_manualErrorSet[$this->defConnectionName] = true;
+        if (!isset($this->_queryCounter[$this->defConnectionName])) {
+            $this->_queryCounter[$this->defConnectionName] = 0;
+        }
+        $this->_queryCounter[$this->defConnectionName]++;
+
+        $this->_errorStore[$this->defConnectionName] = [
+            'error' => $this->_stmtError,
+            'code'  => $this->_stmtErrno,
+            'count' => $this->_queryCounter[$this->defConnectionName],
+        ];
+
+        $this->_stmtError = null;
+        $this->_stmtErrno = null;
+
+        // $this->_cleanupOldErrors();
+    }
+
+    protected function _cleanupOldErrors(): void
+    {
+        $conn = $this->defConnectionName;
+        $current = $this->_queryCounter[$conn] ?? 0;
+
+        foreach ($this->_errorStore as $c => $entry) {
+            if ($c === $conn && is_array($entry)) {
+                if (($entry['count'] ?? 0) < $current) {
+                    unset($this->_errorStore[$c]);
+                }
+            }
+        }
+    }
+
     /**
      * Handles and logs an exception and rethrows it.
      *
@@ -5752,20 +5866,31 @@ final class PDOdb
      */
     protected function handleException(\Throwable $e, string $context = ''): mixed
     {
+
         $prefix = '[Exception]';
         if ($context) {
             $prefix .= " [$context]";
         }
 
-        $this->_stmtError = $prefix . ' ' . $e->getMessage();
-        $this->_stmtErrno = $e->getCode();
+        if (!isset($this->_queryCounter[$this->defConnectionName])) {
+            $this->_queryCounter[$this->defConnectionName] = 0;
+        }
+        $this->_queryCounter[$this->defConnectionName]++;
+
+        $this->_errorStore[$this->defConnectionName] = [
+            'error' => $prefix . ' ' . $e->getMessage(),
+            'code'  => $e->getCode(),
+            'count' => $this->_queryCounter[$this->defConnectionName],
+        ];
+
+
 
         if (($this->_debugLevel[$this->defConnectionName] ?? 0) >= 2 && !empty($this->_query)) {
             $this->logQuery($this->_query, $this->_bindParams ?? null);
         }
 
         $this->logException($e, $context);
-
+        $this->_cleanupOldErrors();
         throw $e;
     }
 

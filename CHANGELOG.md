@@ -6,6 +6,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
+## [1.3.5] – 2025-07-20
+
+### Added
+- Internal query counter (`_queryCounter`) with automatic tracking via `countQuery()`
+- Manual error registration via `setManualLastErrors()` with `_manualErrorSet` flag
+- Batch mode flag (`_batchMode`) to suppress counter increments during multi-inserts
+- Improved `getLastError()` and `getLastErrno()` to return error from latest counted query only
+
+### Changed
+- Refactored `handleException()` and all insert methods to unify error tracking
+- `_buildInsert()` now handles counter increment internally (unless in batch mode)
+- Reset logic now clears `_manualErrorSet` and `_batchMode` reliably (`reset(true)`)
+
+### Fixed
+- Prevented stale or incorrect query counter states after manual or multi-insert failures
+- `paginate()` now resets state cleanly and no longer double-counts queries
+---
 ## [1.3.4] – 2025-07-19
 
 ### Fixed
