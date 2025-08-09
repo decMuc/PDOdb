@@ -18,11 +18,11 @@ namespace decMuc\PDOdb;
 /**
  * Enables heuristic evaluation of suspicious WHERE values.
  *
- * When FALSE (default):
+ * When FALSE:
  *   → Values like "1; DROP TABLE x" or "1' OR 1=1" are immediately flagged
  *     as dangerous and blocked (exception thrown, query not executed).
  *
- * When TRUE:
+ * When TRUE (default):
  *   → Suspicious values are initially allowed, then checked against the
  *     column's expected data type (e.g., INT, VARCHAR).
  *     If a mismatch or clear injection attempt is detected, the query is blocked.
