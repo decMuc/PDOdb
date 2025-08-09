@@ -6,7 +6,7 @@ It offers full support for secure query building, prepared statements, dynamic j
 🔒 Safe by default.  
 ⚙️ Fast, clean, extendable.  
 📘 Documentation:  
-👉 https://decmuc.github.io/DocsPDOdb/
+👉 https://DocsPDOdb.decmuc.dev/
 
 ---
 
