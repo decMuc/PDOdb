@@ -4495,18 +4495,21 @@ final class PDOdb
     }
 
     /**
-     * Automatically expands array parameters in the bound parameters list into multiple placeholders in the SQL query.
+     * Expand array parameters in the current query for IN (...) and similar constructs.
      *
-     * For example, a query with a condition like "WHERE id IN (?)" and a parameter [1, 2, 3]
-     * will be transformed into "WHERE id IN (?, ?, ?)" with the parameters flattened to [1, 2, 3].
-     *
-     * This method scans through the current bound parameters (`_bindParams`),
-     * replaces any single placeholder '?' with the appropriate number of placeholders if the bound value is an array,
-     * and flattens the parameters list accordingly.
-     *
-     * This is necessary because PDO does not support binding an array directly to a single placeholder.
-     *
-     * @return void
+     * Behavior:
+     * - Detects named (e.g., :ids) vs. positional (?) placeholders; mixed usage is rejected.
+     * - Named mode:
+     *     * For scalar values, binds once and allows multiple uses of the same placeholder in SQL.
+     *     * For array values, each SQL occurrence of :name expands to a unique list of placeholders
+     *       using an occurrence index to avoid duplicate names, e.g. :name_0_0, :name_0_1 for the
+     *       first occurrence, :name_1_0, :name_1_1 for the second occurrence.
+     * - Positional mode:
+     *     * Each array parameter expands the next '?' into a comma-separated list of '?' of equal length.
+     * - Empty arrays raise an InvalidArgumentException.
+     * - Resulting bind params:
+     *     * Named: associative array with leading-colon keys (e.g., [':ids_0_0' => 123]).
+     *     * Positional: numeric array of values in execution order.
      */
     protected function _expandArrayParams(): void
     {
@@ -4514,35 +4517,130 @@ final class PDOdb
             return;
         }
 
-        $newQuery = $this->_query;
-        $newParams = [];
+        $query    = (string) $this->_query;
+        $hasNamed = (bool) preg_match('/:[a-zA-Z_][a-zA-Z0-9_]*/', $query);
+        $qCount   = substr_count($query, '?');
+        $hasPos   = $qCount > 0;
 
-        foreach ($this->_bindParams as $param) {
+        if ($hasNamed && $hasPos) {
+            throw new \InvalidArgumentException('Mixed named and positional placeholders are not supported.');
+        }
 
-            $value = is_array($param) && array_key_exists('value', $param)
-                ? $param['value']
-                : $param;
+        if ($hasNamed) {
+            $newParams  = [];
+            $normalized = [];
 
-            if (is_array($value)) {
-
-                $placeholders = implode(', ', array_fill(0, count($value), '?'));
-                $pos = strpos($newQuery, '?');
-
-                if ($pos !== false) {
-                    $newQuery = substr_replace($newQuery, $placeholders, $pos, 1);
+            foreach ($this->_bindParams as $k => $p) {
+                if (is_array($p) && array_key_exists('name', $p)) {
+                    $name  = ltrim((string) $p['name'], ':');
+                    $value = $p['value'] ?? null;
+                    $type  = $p['type']  ?? null;
+                } elseif (is_array($p) && count($p) === 1) {
+                    $origKey = (string) array_key_first($p);
+                    $name    = ltrim($origKey, ':');
+                    $value   = $p[$origKey];
+                    $type    = null;
+                } elseif (is_string($k)) {
+                    $name  = ltrim($k, ':');
+                    $value = $p;
+                    $type  = null;
+                } else {
+                    throw new \InvalidArgumentException('Positional parameter provided in named placeholder mode.');
                 }
 
-                foreach ($value as $val) {
-                    $newParams[] = $val;
+                if (array_key_exists($name, $normalized)) {
+                    throw new \InvalidArgumentException("Duplicate bind for :$name");
+                }
+                $normalized[$name] = ['value' => $value, 'type' => $type];
+            }
+
+            $occurrence = [];
+            $pattern    = '/(?<!:):([a-zA-Z_][a-zA-Z0-9_]*)\b/';
+
+            $query = preg_replace_callback(
+                $pattern,
+                function ($m) use (&$occurrence, $normalized, &$newParams) {
+                    $name = $m[1];
+
+                    if (!array_key_exists($name, $normalized)) {
+                        return ':' . $name;
+                    }
+
+                    $entry = $normalized[$name];
+                    $value = $entry['value'];
+                    $type  = $entry['type']; // reserved; not used here but kept for API symmetry
+
+                    $idx = $occurrence[$name] ?? 0;
+                    $occurrence[$name] = $idx + 1;
+
+                    if (is_array($value)) {
+                        $count = count($value);
+                        if ($count === 0) {
+                            throw new \InvalidArgumentException("Empty array provided for placeholder :$name");
+                        }
+
+                        $expanded = [];
+                        for ($i = 0; $i < $count; $i++) {
+                            $ph = sprintf(':%s_%d_%d', $name, $idx, $i);
+                            $expanded[]      = $ph;
+                            $newParams[$ph]  = $value[$i];
+                        }
+                        return implode(', ', $expanded);
+                    }
+
+                    $key = ':' . $name;
+                    if (!array_key_exists($key, $newParams)) {
+                        $newParams[$key] = $value;
+                    }
+                    return $key;
+                },
+                $query
+            );
+
+            $this->_query      = $query;
+            $this->_bindParams = $newParams;
+            return;
+        }
+
+        $newQuery    = $query;
+        $newParams   = [];
+        $scalarCount = 0;
+
+        foreach ($this->_bindParams as $param) {
+            $value = (is_array($param) && array_key_exists('value', $param)) ? $param['value'] : $param;
+
+            if (is_array($value)) {
+                $count = count($value);
+                if ($count === 0) {
+                    throw new \InvalidArgumentException("Empty array provided for positional placeholder.");
+                }
+
+                $pos = strpos($newQuery, '?');
+                if ($pos === false) {
+                    throw new \RuntimeException("Not enough positional placeholders (?) in query for provided parameters.");
+                }
+
+                $placeholders = implode(', ', array_fill(0, $count, '?'));
+                $newQuery     = substr_replace($newQuery, $placeholders, $pos, 1);
+
+                foreach ($value as $v) {
+                    $newParams[] = $v;
+                    $scalarCount++;
                 }
             } else {
                 $newParams[] = $value;
+                $scalarCount++;
             }
         }
 
-        $this->_query = $newQuery;
+        if (substr_count($newQuery, '?') !== $scalarCount) {
+            throw new \RuntimeException('Placeholder/parameter count mismatch after expansion.');
+        }
+
+        $this->_query      = $newQuery;
         $this->_bindParams = $newParams;
     }
+
 
     protected function _extractSelectClause(string $query): string
     {
