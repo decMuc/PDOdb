@@ -19,13 +19,13 @@ namespace decMuc\PDOdb;
  * Enables heuristic evaluation of suspicious WHERE values.
  *
  * When FALSE:
- *   → Values like "1; DROP TABLE x" or "1' OR 1=1" are immediately flagged
- *     as dangerous and blocked (exception thrown, query not executed).
+ *   Values like "1; DROP TABLE x" or "1' OR 1=1" are immediately flagged
+ *   as dangerous and blocked (exception thrown, query not executed).
  *
  * When TRUE (default):
- *   → Suspicious values are initially allowed, then checked against the
- *     column's expected data type (e.g., INT, VARCHAR).
- *     If a mismatch or clear injection attempt is detected, the query is blocked.
+ *   Suspicious values are initially allowed, then checked against the
+ *   column's expected data type (e.g., INT, VARCHAR).
+ *   If a mismatch or clear injection attempt is detected, the query is blocked.
  *
  * Note: Setting this to TRUE introduces a small performance overhead,
  *       as column definitions may need to be retrieved via `getColumnMeta()`.
