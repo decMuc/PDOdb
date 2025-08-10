@@ -4429,6 +4429,9 @@ final class PDOdb
             $this->_query .= ' LOCK IN SHARE MODE';
         }
 
+        // Expand array params before preparing/binding
+        $this->_expandArrayParams();
+
         // Debug: Query mit Werten speichern
         $this->_lastQuery = $this->_replacePlaceHolders($this->_query, $this->_bindParams);
 
@@ -4443,10 +4446,37 @@ final class PDOdb
             $stmt = $pdo->prepare($this->_query);
 
             foreach ($this->_bindParams as $idx => $bind) {
-                if (is_array($bind) && isset($bind['value'], $bind['type'])) {
-                    $stmt->bindValue(is_int($idx) ? $idx + 1 : $idx, $bind['value'], $bind['type']);
+                // Normalize parameter identifier
+                $param = is_int($idx)
+                    ? $idx + 1
+                    : (str_starts_with((string)$idx, ':') ? (string)$idx : ':' . (string)$idx);
+
+                // Extract value (+ optional type)
+                if (is_array($bind)) {
+                    $val  = array_key_exists('value', $bind) ? $bind['value']
+                        : (array_key_exists(0, $bind) ? $bind[0] : null);
+                    $type = $bind['type'] ?? null;
                 } else {
-                    $stmt->bindValue(is_int($idx) ? $idx + 1 : $idx, $bind);
+                    $val  = $bind;
+                    $type = null;
+                }
+
+                // Scalarize/validate
+                if ($val instanceof \DateTimeInterface) {
+                    $val = $val->format('Y-m-d H:i:s');
+                }
+                if (is_array($val) || (is_object($val) && !($val instanceof \Stringable))) {
+                    throw $this->handleException(
+                        new \InvalidArgumentException('Non-scalar value in bind parameters.'),
+                        __METHOD__
+                    );
+                }
+
+                // Bind (with type if provided)
+                if ($type !== null) {
+                    $stmt->bindValue($param, $val, $type);
+                } else {
+                    $stmt->bindValue($param, $val);
                 }
             }
 
