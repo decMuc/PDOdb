@@ -34,6 +34,10 @@ composer require decmuc/pdodb
 ```php
 $db->whereInt('id', 42);
 $user = $db->getOne('users');
+
+// or
+$db->whereBool('status', 1); // true/false
+$user = $db->get('users');
 ```
 
 ---
