@@ -35,10 +35,26 @@ composer require decmuc/pdodb
 $db->whereInt('id', 42);
 $user = $db->getOne('users');
 
-// or
-$db->whereBool('status', 1); // true/false
-$user = $db->get('users');
+// Booleans made easy
+$db->whereBool('status', true);
+$users = $db->get('users');
+// In short:
+$users = $db->whereBool('status', true)->get('users');
+// whereBool('status', 1) + get('users') is equivalent to
+// SELECT * FROM users WHERE status = 1.
+// false → 0 (or FALSE)
+$users = $db->whereBool('status', false)->get('users');
+// SELECT * FROM `users` WHERE `status` = 0
+
+// Chaining with other conditions
+$users = $db->whereBool('is_active', true)
+   ->where('role', 'admin')
+   ->orderBy('created_at', 'DESC')
+   ->get('users');
+
+
 ```
+For comprehensive documentation and more examples, visit the PDOdb docs: https://DocsPDOdb.decmuc.dev
 
 ---
 
