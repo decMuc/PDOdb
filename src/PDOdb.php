@@ -579,17 +579,17 @@ final class PDOdb
     /**
      * Returns the last error code from the executed PDO statement.
      *
-     * @return int|null PDO error code, or 0 if none.
+     * @return null PDO error code, or 0 if none.
      */
-    public function getLastErrno(): null|int
+    public function getLastErrno(): int
     {
         $conn = $this->defConnectionName;
         $cnt  = $this->_queryCounter[$conn] ?? 0;
 
         if (isset($this->_errorStore[$conn]) && $this->_errorStore[$conn]['count'] === $cnt){
-            return $this->_errorStore[$conn]['code'] ?? null;
+            return $this->_errorStore[$conn]['code'] ?? 0;
         }
-        return null;
+        return 0;
     }
 
     /**
