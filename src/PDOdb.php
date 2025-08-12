@@ -94,11 +94,11 @@ final class PDOdb
     protected array $_errorStore = [];                                  // Error storage
     protected array $_manualErrorSet = [];
     protected array $_batchMode = [];
-    protected array $_queryCounter = [];                                // Query error counter
+    protected array $_queryCounter = [];                               // Query error counter
     protected $_lastInsertId = null;                                   // Last inserted ID
     protected array $_tableLocks = [];                                 // Locked tables
-    protected array $_tableLockMethod = [];                       // Lock type: READ or WRITE
-    protected array $_transaction_in_progress = [];                   // Is transaction active?
+    protected array $_tableLockMethod = [];                            // Lock type: READ or WRITE
+    protected array $_transaction_in_progress = [];                    // Is transaction active?
     protected bool $_lockInShareMode = false;
     // ==[ 07. Pagination Support ]==
 
