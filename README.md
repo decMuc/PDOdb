@@ -52,7 +52,6 @@ $users = $db->whereBool('is_active', true)
    ->orderBy('created_at', 'DESC')
    ->get('users');
 
-
 ```
 For comprehensive documentation and more examples, visit the PDOdb docs: https://DocsPDOdb.decmuc.dev
 
