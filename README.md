@@ -31,6 +31,7 @@ composer require decmuc/pdodb
 
 ## Quick Example
 Two lines for 90% of queries. MySQL-first, prepared by default—no manual prepare() or binding.
+
 ```php
 $db->whereInt('id', 42);
 $user = $db->getOne('users');
