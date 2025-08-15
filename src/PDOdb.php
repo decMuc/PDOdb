@@ -8,7 +8,7 @@
  * @copyright Copyright (c) 2025 L. Fischer
  * @license   https://opensource.org/licenses/MIT MIT License
  * @link      https://github.com/decMuc/PDOdb
- * @version   1.3.5
+ * @version   1.3.6
  * @inspired-by https://github.com/ThingEngineer/PHP-MySQLi-Database-Class
  */
 
