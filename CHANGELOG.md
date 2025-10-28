@@ -6,6 +6,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
+## [1.3.7] – 2025-10-28
+### Added
+- `whereRaw()` and `orWhereRaw()`:
+    - Allows injecting custom WHERE fragments (including complex grouped logic, nested AND/OR blocks, function calls, multi-column comparisons, etc.).
+    - Supports `?` placeholders plus a value array for proper PDO prepared binding, e.g.  
+      `$db->whereRaw("(base_name LIKE ? OR sku LIKE ?)", [$search, $search]);`
+    - Can be combined with existing builder methods and will be included in `$db->get()`, `$db->update()`, `$db->delete()`, etc.
+
+- Automatic decimal comma normalization for numeric columns:
+    - When writing to `DECIMAL`, `FLOAT`, `DOUBLE`, etc., values like `"12,20"` are now automatically normalized to `"12.20"` internally.
+    - Removes the need to manually replace commas with dots before insert/update.
+    - Applies only to numeric column types; regular string/text fields are not touched.
+
+### Changed
+- Internal WHERE builder now supports raw segments alongside the typed helpers (`whereInt()`, `whereStr()`, …). Raw segments are appended without column/operator validation by design, but their parameters (if provided) are still bound via prepared statements.
+
+### Notes
+- Decimal normalization is considered non-breaking: existing code that already passes `"12.20"` continues to behave the same. The feature mainly removes repetitive pre-processing of localized numeric input.
 ## [1.3.6] – 2025-08-15
 ### Added
 - Reuse of named scalar placeholders across multiple SQL occurrences.

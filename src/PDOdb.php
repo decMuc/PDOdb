@@ -8,7 +8,7 @@
  * @copyright Copyright (c) 2025 L. Fischer
  * @license   https://opensource.org/licenses/MIT MIT License
  * @link      https://github.com/decMuc/PDOdb
- * @version   1.3.6
+ * @version   1.3.7
  * @inspired-by https://github.com/ThingEngineer/PHP-MySQLi-Database-Class
  */
 
@@ -1881,6 +1881,22 @@ final class PDOdb
         return $this->whereInt($column, $value, $operator);
     }
 
+    /**
+     * Append raw SQL to WHERE with AND.
+     */
+    public function whereRaw(string $sql, array $params = []): self
+    {
+        return $this->addRawCondition($sql, $params, 'AND');
+    }
+
+    /**
+     * Append raw SQL to WHERE with OR.
+     */
+    public function orWhereRaw(string $sql, array $params = []): self
+    {
+        return $this->addRawCondition($sql, $params, 'OR');
+    }
+
     // orWHERE Clauses
 
     /**
@@ -2240,6 +2256,33 @@ final class PDOdb
     public function orWhereTimestamp(string $column, int|string $value, string $operator = '='):self
     {
         return $this->orWhereInt($column, $value, $operator);
+    }
+
+
+    /**
+     * Core: push a RAW marker into the internal WHERE stack.
+     * Why: keeps previous params intact (append-only), preserves condition order.
+     */
+    protected function addRawCondition(string $sql, array $params, string $concat): self
+    {
+        $sql = trim($sql);
+        if ($sql === '') {
+            // defensive: do not accept empty raw fragments
+            $this->reset(true);
+            throw $this->handleException(
+                new \InvalidArgumentException('whereRaw(): empty SQL fragment'),
+                'whereRaw'
+            );
+        }
+
+        // For the very first WHERE element, drop the concat to avoid leading AND/OR
+        $cond = (isset($this->_where) && \is_array($this->_where) && \count($this->_where) > 0) ? $concat : '';
+
+        // Store as a 4-tuple to match the internal shape: [concat, column, comparison, value]
+        // Use a special column marker "[RAW]" and keep $comparison = $sql, $value = $params
+        $this->_where[] = [$cond, '[RAW]', $sql, $params];
+
+        return $this;
     }
 
     /**
@@ -3755,6 +3798,17 @@ final class PDOdb
 
         foreach ($conditions as [$cond, $column, $comparison, $value]) {
             $this->_query .= $cond ? " {$cond} " : '';
+            // === PATCH: RAW support ===
+            if ($column === '[RAW]') {
+                // keine zweite $cond-Anfügung hier!
+                $this->_query .= $comparison;               // e.g. "(id = ? OR id = ?)"
+                if (!empty($value)) {
+                    $this->_bindParams((array)$value);      // append-only
+                }
+                continue;
+            }
+
+
             //$useTicks = !($operator === 'HAVING' && preg_match('/^[A-Z]+\(.+\)$/i', $column));
             // $this->_query .= $useTicks ? $this->_addTicks($column) : $column;
             $this->_query .= $this->_secureEscapeTableAndColumn($column);
@@ -5357,6 +5411,9 @@ final class PDOdb
         }
 
         foreach ($stack as $i => $item) {
+            if (is_array($item) && isset($item[1]) && $item[1] === '[RAW]') {
+                continue;
+            }
             if (!is_array($item) || !isset($item['__DEFERRED__'])) {
                 $cond     = $item[0] ?? 'AND';
                 $column   = $item[1] ?? null;
