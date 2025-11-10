@@ -8,7 +8,7 @@
  * @copyright Copyright (c) 2025 L. Fischer
  * @license   https://opensource.org/licenses/MIT MIT License
  * @link      https://github.com/decMuc/PDOdb
- * @version   1.3.7
+ * @version   1.3.8
  * @inspired-by https://github.com/ThingEngineer/PHP-MySQLi-Database-Class
  */
 
@@ -35,6 +35,7 @@ if (!defined('PDOdb_HEURISTIC_WHERE_CHECK')) {
 }
 final class PDOdb
 {
+
 
     // ==[ 01. Connection Management ]==
     protected static array $_instances = [];                           // All active DB instances
@@ -3631,6 +3632,7 @@ final class PDOdb
             if (!empty($bindParams)) {
                 foreach ($bindParams as $key => $value) {
                     $paramKey = is_int($key) ? $key + 1 : $key;
+                    $value = $this->_normalizeDecimalStringSimple($value);
                     $stmt->bindValue($paramKey, $value);
                 }
             }
@@ -3739,9 +3741,12 @@ final class PDOdb
     protected function _bindParam(mixed $value): void
     {
         if (is_array($value) && isset($value['value'], $value['type'])) {
+            $value['value'] = $this->_normalizeDecimalStringSimple($value['value']);
             $this->_bindParams[] = $value;
             return;
         }
+
+        $value = $this->_normalizeDecimalStringSimple($value);
 
         static $typeMap = [
             'integer' => \PDO::PARAM_INT,
@@ -5439,7 +5444,12 @@ final class PDOdb
                 $allowed = (strlen((string)$tmp) === strlen((string)$value));
             }
             elseif (in_array($type, ['float', 'double', 'decimal', 'real'], true)) {
-                $allowed = is_numeric($value);
+                $nv = $this->_normalizeDecimalStringSimple($value);
+                if (is_string($nv)) {
+                    $nv = $this->_applyDecimalScale($nv, strtolower($meta['dbtype'] ?? ($meta['definition'] ?? ($meta['type_length'] ?? $type))));
+                }
+                $allowed = is_numeric($nv);
+                $value = $nv;
             }
             elseif (isset($meta['enumValues']) && is_array($meta['enumValues'])) {
                 $allowed = in_array((string) $value, $meta['enumValues'], true);
@@ -5573,6 +5583,7 @@ final class PDOdb
         $validated = [];
 
         foreach ($insertData as $col => $val) {
+            // 1) Spaltenname absichern
             if (!$this->_secureIsSafeColumn($col)) {
                 $this->reset(true);
                 throw $this->handleException(
@@ -5581,13 +5592,13 @@ final class PDOdb
                 );
             }
 
-            // Subquery object?
+            // 2) Subquery?
             if (is_object($val) && method_exists($val, 'getSubQuery')) {
                 $validated[$col] = $val;
                 continue;
             }
 
-            // Special values like [F], [I], [N]
+            // 3) [F], [I], [N]
             if (is_array($val) && count($val) === 1) {
                 $key = array_key_first($val);
 
@@ -5612,18 +5623,21 @@ final class PDOdb
                         );
                     }
 
-                    $validated[$col] = [$key => $inner];
+                    $validated[$col] = $val;
                     continue;
                 }
             }
 
-            // Allow only scalar values
-            if (!is_scalar($val) && $val !== null) {
-                $this->reset(true);
-                throw $this->handleException(
-                    new \Exception("Invalid non-scalar value for column '{$col}' in {$context}()"),
-                    $context
-                );
+            // Normalize decimals
+            $meta   = $this->_secureGetColumnMeta($col);
+            $type   = strtolower($meta['type'] ?? '');
+            $dbType = strtolower($meta['dbtype'] ?? ($meta['definition'] ?? ($meta['type_length'] ?? $type)));
+
+            if (in_array($type, ['decimal', 'float', 'double', 'real'], true)) {
+                $val = $this->_normalizeDecimalStringSimple($val);
+                if (is_string($val)) {
+                    $val = $this->_applyDecimalScale($val, $dbType);
+                }
             }
 
             $validated[$col] = $val;
@@ -6172,4 +6186,57 @@ final class PDOdb
         $this->_lastQuery        = '';
         $this->_lastDebugQuery   = '';
     }
+
+    /**
+     * Simple and safe decimal normalization for comma/dot formats.
+     * Examples: "12,34"->"12.34", "1.234,56"->"1234.56", "1,234.56"->"1234.56".
+     * Returns SQL-safe string with '.' or original value if unsure.
+     */
+    protected function _normalizeDecimalStringSimple(mixed $value): mixed
+    {
+        if ($value === null) return $value;
+        if (is_int($value) || is_float($value)) {
+            $s = rtrim(rtrim(sprintf('%.15F', (float)$value), '0'), '.');
+            return $s === '' ? '0' : $s;
+        }
+        if (!is_string($value)) return $value;
+
+        $s = trim($value);
+        if ($s === '') return $value;
+
+        $s = preg_replace('/[ \x{00A0}\x{202F}]+/u', '', $s);
+
+        $hasComma = strpos($s, ',') !== false;
+        $hasDot   = strpos($s, '.') !== false;
+
+        if ($hasComma && !$hasDot) {
+            $s = str_replace(',', '.', $s);
+        } elseif ($hasComma && $hasDot) {
+            if (strrpos($s, ',') > strrpos($s, '.')) {
+                $s = str_replace('.', '', $s);
+                $s = str_replace(',', '.', $s);
+            } else {
+                $s = str_replace(',', '', $s);
+            }
+        } else {
+            if (preg_match('/^\d{1,3}(\.\d{3})+$/', $s)) {
+                $s = str_replace('.', '', $s);
+            }
+        }
+
+        if (!preg_match('/^-?\d+(\.\d+)?$/', $s)) return $value;
+        return $s;
+    }
+    /**
+     * Format normalized decimal string to column scale (DECIMAL(p,s)) to avoid 1265.
+     */
+    protected function _applyDecimalScale(string $normalized, string $dbType): string
+    {
+        if (preg_match('/decimal\s*\(\s*\d+\s*,\s*(\d+)\s*\)/i', $dbType, $m)) {
+            $scale = (int)$m[1];
+            return number_format((float)$normalized, $scale, '.', '');
+        }
+        return $normalized;
+    }
+
 }
