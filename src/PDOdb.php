@@ -949,6 +949,38 @@ final class PDOdb
     }
 
     /**
+     * Generates a raw SQL expression for use in INSERT/UPDATE/ON DUPLICATE KEY clauses.
+     *
+     * In contrast to func(), this helper does **not** validate the expression against
+     * a whitelist of function/INTERVAL patterns. The given expression is injected
+     * directly into the generated SQL, while the optional $params are still bound
+     * safely as normal parameters.
+     *
+     * Use this only for static, developer-controlled SQL fragments – never for
+     * user input or dynamic, untrusted strings.
+     *
+     * Example (ON DUPLICATE KEY increment):
+     *
+     *   $db->onDuplicate([
+     *       'value' => $db->expr('value + VALUES(value)')
+     *   ])->insert('stats_daily', [
+     *       'stat_key'  => 'visits',
+     *       'stat_date' => '2025-01-01',
+     *       'value'     => 3,
+     *   ]);
+     *
+     *   → Generates: `value = value + VALUES(value)`
+     *
+     * @param string     $expr   Raw SQL expression to inject (e.g. "value + VALUES(value)")
+     * @param array|null $params Optional array of parameters to bind for this expression
+     * @return array<string, array{0: string, 1?: array}>
+     */
+    public function expr(string $expr, ?array $params = null): array
+    {
+        return ['[Z]' => [$expr, $params ?? []]];
+    }
+
+    /**
      * Returns an SQL-compatible expression to increment a numeric field.
      *
      * Usage in an update statement:
