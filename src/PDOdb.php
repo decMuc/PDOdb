@@ -42,6 +42,11 @@ final class PDOdb
     protected array $connectionsSettings = [];                         // Connection config per instance
     protected string $defConnectionName = 'default';                   // Active instance name
     protected int $autoReconnectCount = 0;
+    /**
+     * Default DB type for this connection.
+     * Currently only 'mysql' is used, but prepared for future drivers (pgsql, sqlite, ...).
+     */
+    protected string $defDbType = 'mysql';
     public bool $autoReconnect = true;
     protected array $pdoConnections = [];                              // PDO handles per instance
     protected array $_pdo = [];                                        // Legacy internal PDO handles
@@ -340,6 +345,11 @@ final class PDOdb
         $this->prefix[$this->defConnectionName] = $prefix;
     }
 
+    /**
+     * Returns the current table prefix.
+     *
+     * Changed from protected to public (see https://github.com/decMuc/PDOdb/pull/10/commits/095b38f0d5ecdfc6881a75d679ce9e80d4c7f9f7, thanks @xJuvi).
+     */
     public function getPrefix(): string
     {
         return $this->prefix[$this->defConnectionName] ?? '';
@@ -3756,6 +3766,82 @@ final class PDOdb
             if (isset($row[$firstKey])) {
                 $values[] = $row[$firstKey];
             }
+        }
+
+        return $values;
+    }
+
+    /**
+     * MySQL helper:
+     * Returns all ENUM values of a given column.
+     *
+     * @param string $table     Table name without prefix (prefix is added internally)
+     * @param string $column    Column name
+     * @param array  $priority  Optional list of values that should be ordered first
+     *
+     * @return array<string>
+     */
+    public function getEnumValues(string $table, string $column, array $priority = []): array
+    {
+        if (!in_array($this->defDbType, ['mysql', 'mariadb'], true)) {
+            return [];
+        }
+
+        // ggf. Prefix automatisch ergänzen, damit es sich wie get()/insert() verhält
+        $tableName = $this->getPrefix() . $table;
+
+        $sql = "
+        SELECT COLUMN_TYPE
+          FROM information_schema.COLUMNS
+         WHERE TABLE_SCHEMA = DATABASE()
+           AND TABLE_NAME   = ?
+           AND COLUMN_NAME  = ?
+    ";
+
+        // rawQueryValue liefert bei dir ein Array
+        $type = $this->rawQueryValue($sql, [$tableName, $column]);
+        if (!is_array($type) || !isset($type[0]) || !is_string($type[0])) {
+            return [];
+        }
+
+        $columnType = $type[0]; // z.B. "enum('A','B','C')"
+
+        if (!preg_match('/^enum\((.*)\)$/i', $columnType, $matches)) {
+            return [];
+        }
+
+        // Einzelne Values extrahieren
+        $values = array_map(
+            static function (string $v): string {
+                $v = trim($v);
+                // äußere Quotes entfernen
+                $v = preg_replace("/^'(.*)'$/", '$1', $v) ?? $v;
+                // escaped Quotes wieder normalisieren
+                return str_replace("\\'", "'", $v);
+            },
+            explode(',', $matches[1])
+        );
+
+        // Grundsortierung alphabetisch
+        sort($values, SORT_NATURAL | SORT_FLAG_CASE);
+
+        // Priorisierte Werte nach vorne ziehen
+        if ($priority) {
+            usort(
+                $values,
+                static function (string $a, string $b) use ($priority): int {
+                    $pa = array_search($a, $priority, true);
+                    $pb = array_search($b, $priority, true);
+
+                    if ($pa !== false && $pb !== false) {
+                        return $pa <=> $pb; // Reihenfolge wie in $priority
+                    }
+                    if ($pa !== false) return -1; // $a ist priorisiert
+                    if ($pb !== false) return 1;  // $b ist priorisiert
+
+                    return strnatcasecmp($a, $b);
+                }
+            );
         }
 
         return $values;
