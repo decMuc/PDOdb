@@ -340,7 +340,7 @@ final class PDOdb
         $this->prefix[$this->defConnectionName] = $prefix;
     }
 
-    protected function getPrefix(): string
+    public function getPrefix(): string
     {
         return $this->prefix[$this->defConnectionName] ?? '';
     }
