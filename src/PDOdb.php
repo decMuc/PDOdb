@@ -8,7 +8,7 @@
  * @copyright Copyright (c) 2025 L. Fischer
  * @license   https://opensource.org/licenses/MIT MIT License
  * @link      https://github.com/decMuc/PDOdb
- * @version   1.3.8
+ * @version   1.3.9
  * @inspired-by https://github.com/ThingEngineer/PHP-MySQLi-Database-Class
  */
 
@@ -3068,7 +3068,7 @@ final class PDOdb
      * @return bool|self|array|string Returns result set or false on failure, string for json return
      * @throws \Throwable
      */
-    public function get(string $tableName, int|array $numRows = null, string|array $columns = '*'): bool|self|array|string
+    public function get(string $tableName, int|array|null $numRows = null, string|array $columns = '*'): bool|self|array|string
     {
         $this->_count = 0;
         $this->_totalCount = 0;
@@ -3275,7 +3275,7 @@ final class PDOdb
      * @throws \Exception
      * @throws \Throwable
      */
-    public function insertMulti(string $tableName, array $multiInsertData, array $dataKeys = null): array|false
+    public function insertMulti(string $tableName, array $multiInsertData, ?array $dataKeys = null): array|false
     {
         $this->_stmtError = null;
         $this->_stmtErrno = null;
@@ -3450,7 +3450,7 @@ final class PDOdb
      * @deprecated Will be removed in v1.5.x – use rawQuery() instead.
      *
      */
-    public function query(string $query, int|array $numRows = null): bool|array|string
+    public function query(string $query, int|array|null $numRows = null): bool|array|string
     {
         try {
 
@@ -3712,7 +3712,7 @@ final class PDOdb
      * @throws \PDOException on error.
      * @throws \Throwable
      */
-    public function rawQueryOne(string $query, array $bindParams = null): mixed
+    public function rawQueryOne(string $query, ?array $bindParams = null): mixed
     {
         $query .= ' LIMIT 1';
 
@@ -4562,7 +4562,7 @@ final class PDOdb
      * @return \PDOStatement|string Prepared PDO statement.
      * @throws \Exception|\Throwable On preparation failure or invalid context.
      */
-    protected function _buildQuery(int|array|null $numRows = null, array $tableData = null): \PDOStatement|string
+    protected function _buildQuery(int|array|null $numRows = null, ?array $tableData = null): \PDOStatement|string
     {
         // Tabellenname + JOINs vorbereiten
         $this->_buildTable();
