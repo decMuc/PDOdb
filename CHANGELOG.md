@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
+## [1.3.9] – 2025-11-21
+### Fixed
+- Resolved PHP 8.4 deprecation warnings for implicitly nullable parameters:
+    - `get()` and `query()` now declare `$numRows` as `int|array|null` (in line with the existing PHPDoc).
+    - Optional array parameters in `rawQueryOne()`, `insertMulti()` and the internal `_buildQuery()` helper are now explicitly nullable (`?array`).
+- No behavioural changes – this release only adjusts type declarations to keep PDOdb clean under PHP 8.4.
+
 ## [1.3.8] – 2025-11-10
 ### Fixed decimal normalization
 
