@@ -8,7 +8,7 @@
  * @copyright Copyright (c) 2025 L. Fischer
  * @license   https://opensource.org/licenses/MIT MIT License
  * @link      https://github.com/decMuc/PDOdb
- * @version   1.3.9
+ * @version   1.4.0
  * @inspired-by https://github.com/ThingEngineer/PHP-MySQLi-Database-Class
  */
 
@@ -1411,6 +1411,7 @@ final class PDOdb
             'host'       => $subQueryAlias,
             'isSubQuery' => true,
             'instanz'    => $this->defConnectionName,
+            'prefix'     => $this->getPrefix(),
         ]);
     }
 
@@ -1925,6 +1926,60 @@ final class PDOdb
     }
 
     /**
+     * Adds an AND WHERE LIKE condition to the query.
+     *
+     * @param string $column Column name to search in.
+     * @param string $value  Search value (wildcards applied based on mode).
+     * @param string $mode   Wildcard mode: 'both' (default), 'left', 'right', or 'none'.
+     *
+     * @return self Fluent interface for chaining.
+     * @throws \Throwable
+     */
+    public function whereLike(string $column, string $value, string $mode = 'both'): self
+    {
+        $value = $this->_buildLikeValue($value, $mode);
+        return $this->secureWhere($column, $value, 'LIKE', 'AND');
+    }
+
+    /**
+     * Adds an AND WHERE NOT LIKE condition to the query.
+     *
+     * @param string $column Column name to search in.
+     * @param string $value  Search value (wildcards applied based on mode).
+     * @param string $mode   Wildcard mode: 'both' (default), 'left', 'right', or 'none'.
+     *
+     * @return self Fluent interface for chaining.
+     * @throws \Throwable
+     */
+    public function whereNotLike(string $column, string $value, string $mode = 'both'): self
+    {
+        $value = $this->_buildLikeValue($value, $mode);
+        return $this->secureWhere($column, $value, 'NOT LIKE', 'AND');
+    }
+
+    /**
+     * Adds an AND WHERE SOUNDS LIKE condition to the query.
+     *
+     * Uses MySQL's SOUNDS LIKE operator, which compares values phonetically
+     * using the Soundex algorithm. Useful for fuzzy name searches.
+     *
+     * Example:
+     *   $db->whereSoundsLike('name', 'Alice');
+     *   // Matches: Alice, Aliss, Alis, etc.
+     *
+     * @param string $column Column name to compare.
+     * @param string $value  The phonetic search value.
+     *
+     * @return self Fluent interface for chaining.
+     * @throws \Throwable
+     */
+    public function whereSoundsLike(string $column, string $value): self
+    {
+        return $this->secureWhere($column, $value, 'SOUNDS LIKE', 'AND');
+    }
+
+
+    /**
      * Append raw SQL to WHERE with AND.
      */
     public function whereRaw(string $sql, array $params = []): self
@@ -2301,7 +2356,121 @@ final class PDOdb
         return $this->orWhereInt($column, $value, $operator);
     }
 
+    /**
+     * Adds an OR WHERE LIKE condition to the query.
+     *
+     * @param string $column Column name to search in.
+     * @param string $value  Search value (wildcards applied based on mode).
+     * @param string $mode   Wildcard mode: 'both' (default), 'left', 'right', or 'none'.
+     *
+     * @return self Fluent interface for chaining.
+     * @throws \Throwable
+     */
+    public function orWhereLike(string $column, string $value, string $mode = 'both'): self
+    {
+        $value = $this->_buildLikeValue($value, $mode);
+        return $this->secureWhere($column, $value, 'LIKE', 'OR');
+    }
 
+    /**
+     * Adds an OR WHERE NOT LIKE condition to the query.
+     *
+     * @param string $column Column name to search in.
+     * @param string $value  Search value (wildcards applied based on mode).
+     * @param string $mode   Wildcard mode: 'both' (default), 'left', 'right', or 'none'.
+     *
+     * @return self Fluent interface for chaining.
+     * @throws \Throwable
+     */
+    public function orWhereNotLike(string $column, string $value, string $mode = 'both'): self
+    {
+        $value = $this->_buildLikeValue($value, $mode);
+        return $this->secureWhere($column, $value, 'NOT LIKE', 'OR');
+    }
+
+    /**
+     * Adds an OR WHERE SOUNDS LIKE condition to the query.
+     *
+     * Uses MySQL's SOUNDS LIKE operator, which compares values phonetically
+     * using the Soundex algorithm. Useful for fuzzy name searches.
+     *
+     * @param string $column Column name to compare.
+     * @param string $value  The phonetic search value.
+     *
+     * @return self Fluent interface for chaining.
+     * @throws \Throwable
+     */
+    public function orWhereSoundsLike(string $column, string $value): self
+    {
+        return $this->secureWhere($column, $value, 'SOUNDS LIKE', 'OR');
+    }
+
+
+    /**
+     * Opens a WHERE condition group, adding an opening parenthesis to the query.
+     *
+     * Must be closed with closeWhereGroup(). For a self-contained alternative,
+     * see whereGroup() which accepts a callback and closes automatically.
+     *
+     * // WHERE grouping – inspired by xJuvi (github.com/decMuc/PDOdb/pull/14)
+     *
+     * Example:
+     *   $db->whereInt('age', 18, '>=')
+     *      ->openWhereGroup('AND')
+     *          ->whereString('country', 'DE')
+     *          ->orWhereString('country', 'AT')
+     *      ->closeWhereGroup()
+     *      ->get('users');
+     *   // WHERE age >= 18 AND (country = 'DE' OR country = 'AT')
+     *
+     * @param string $operator Logical operator to prepend: 'AND' or 'OR' (default: 'AND').
+     * @return self Fluent interface for chaining.
+     */
+    public function openWhereGroup(string $operator = 'AND'): self
+    {
+        $this->_where[] = ['__group_open' => true, 'operator' => strtoupper($operator)];
+        return $this;
+    }
+
+    /**
+     * Closes a previously opened WHERE condition group.
+     *
+     * Must be preceded by a matching openWhereGroup() call.
+     *
+     * @return self Fluent interface for chaining.
+     */
+    public function closeWhereGroup(): self
+    {
+        $this->_where[] = ['__group_close' => true];
+        return $this;
+    }
+
+    /**
+     * Adds a grouped WHERE condition block using a callback.
+     *
+     * Automatically opens and closes the group, making it impossible
+     * to forget the closing parenthesis.
+     *
+     * Example:
+     *   $db->whereInt('age', 18, '>=')
+     *      ->whereGroup(function($q) {
+     *          $q->whereString('country', 'DE')
+     *            ->orWhereString('country', 'AT');
+     *      }, 'AND')
+     *      ->get('users');
+     *   // WHERE age >= 18 AND (country = 'DE' OR country = 'AT')
+     *
+     * @param callable $callback Callback receiving the current instance for chaining.
+     * @param string   $operator Logical operator to prepend: 'AND' or 'OR' (default: 'AND').
+     * @return self Fluent interface for chaining.
+     */
+    public function whereGroup(callable $callback, string $operator = 'AND'): self
+    {
+        $this->openWhereGroup($operator);
+        $callback($this);
+        $this->closeWhereGroup();
+        return $this;
+    }
     /**
      * Core: push a RAW marker into the internal WHERE stack.
      * Why: keeps previous params intact (append-only), preserves condition order.
@@ -2795,6 +2964,18 @@ final class PDOdb
                 $this->logException($e, "join [table={$joinTable}]");
                 throw $e;
             }
+
+            // Prefix ergänzen – wie bei get() und insert()
+            $parts     = preg_split('/\s+/', trim($joinTable), 2);
+            $tableName = $parts[0];
+            $alias     = $parts[1] ?? null;
+            $prefix    = $this->getPrefix();
+
+            if ($prefix && !str_starts_with($tableName, $prefix)) {
+                $tableName = $prefix . $tableName;
+            }
+
+            $joinTable = $alias ? "{$tableName} {$alias}" : $tableName;
         }
 
         $this->_pendingJoins[] = [$joinType, $joinTable, $joinCondition];
@@ -3019,7 +3200,12 @@ final class PDOdb
      */
     public function copy(): static
     {
-        return unserialize(serialize($this));
+        $clone = clone $this;
+        // PDO-Connections nicht klonen – werden bei Bedarf neu aufgebaut
+        $clone->_pdo = [];
+        $clone->pdoConnections = [];
+        $clone->pdo = null;
+        return $clone;
     }
 
     /**
@@ -3629,14 +3815,17 @@ final class PDOdb
         $query = preg_replace('/\s+/', ' ', $query);
         preg_match_all("/(from|into|update|join|describe)\s+[`']?([a-zA-Z0-9_-]+)[`']?/i", $query, $matches);
 
-        // Compatible with old behavior (static or non-static prefix, as needed)
-        // $prefix = property_exists($this, 'prefix') ? $this->prefix : (self::$prefix ?? '');
         $prefix = $this->getPrefix();
-        if (empty($matches[2])) {
+        if (empty($matches[2]) || empty($prefix)) {
             return $query;
         }
 
         foreach ($matches[2] as $table) {
+            // Systemdatenbanken nie prefixen
+            if (in_array(strtolower($table), ['information_schema', 'performance_schema', 'mysql', 'sys'], true)) {
+                continue;
+            }
+
             if (strpos($table, $prefix) !== 0) {
                 $query = preg_replace(
                     "/(\b(from|into|update|join|describe)\s+)([`']?)$table([`']?)/i",
@@ -3674,7 +3863,9 @@ final class PDOdb
 
             if (!empty($bindParams)) {
                 foreach ($bindParams as $key => $value) {
-                    $paramKey = is_int($key) ? $key + 1 : $key;
+                    $paramKey = is_int($key)
+                        ? $key + 1                                                        // positional: 1, 2, 3
+                        : (str_starts_with((string)$key, ':') ? $key : ':' . $key);      // named: :role oder role → :role
                     $value = $this->_normalizeDecimalStringSimple($value);
                     $stmt->bindValue($paramKey, $value);
                 }
@@ -3690,9 +3881,9 @@ final class PDOdb
 
             return match ($type) {
                 'SELECT', 'SHOW', 'DESCRIBE', 'EXPLAIN' => $this->_mapResultByKey($stmt->fetchAll($this->getPdoFetchMode())),
-                'INSERT'                                => $pdo->lastInsertId() ?: $this->_count,
-                'UPDATE', 'DELETE', 'REPLACE'           => $this->_count,
-                default                                 => $this->_mapResultByKey($stmt->fetchAll($this->getPdoFetchMode())),
+                'INSERT'                                 => $pdo->lastInsertId() ?: $this->_count,
+                'UPDATE', 'DELETE', 'REPLACE'            => $this->_count,
+                default                                  => $this->_mapResultByKey($stmt->fetchAll($this->getPdoFetchMode())),
             };
         } catch (\PDOException $e) {
             return $this->handleException($e, 'rawQuery');
@@ -3919,22 +4110,44 @@ final class PDOdb
         }
 
         $this->_query .= ' ' . $operator . ' ';
+        $first = true;
 
-        foreach ($conditions as [$cond, $column, $comparison, $value]) {
-            $this->_query .= $cond ? " {$cond} " : '';
+        foreach ($conditions as $condition) {
+
+            // === GROUP OPEN ===
+            if (is_array($condition) && isset($condition['__group_open'])) {
+                $op = $condition['operator'] ?? 'AND';
+                if (!$first) {
+                    $this->_query .= " {$op} ";
+                }
+                $this->_query .= '(';
+                $first = true;
+                continue;
+            }
+
+            // === GROUP CLOSE ===
+            if (is_array($condition) && isset($condition['__group_close'])) {
+                $this->_query .= ')';
+                $first = false;
+                continue;
+            }
+
+            [$cond, $column, $comparison, $value] = $condition;
+
+            if (!$first) {
+                $this->_query .= $cond ? " {$cond} " : '';
+            }
+            $first = false;
+
             // === PATCH: RAW support ===
             if ($column === '[RAW]') {
-                // keine zweite $cond-Anfügung hier!
-                $this->_query .= $comparison;               // e.g. "(id = ? OR id = ?)"
+                $this->_query .= $comparison;
                 if (!empty($value)) {
-                    $this->_bindParams((array)$value);      // append-only
+                    $this->_bindParams((array)$value);
                 }
                 continue;
             }
 
-
-            //$useTicks = !($operator === 'HAVING' && preg_match('/^[A-Z]+\(.+\)$/i', $column));
-            // $this->_query .= $useTicks ? $this->_addTicks($column) : $column;
             $this->_query .= $this->_secureEscapeTableAndColumn($column);
             $comp = strtoupper(trim($comparison));
 
@@ -3960,7 +4173,7 @@ final class PDOdb
                 continue;
             }
 
-            // [F], [I], [N] Platzhalter (nur 1 erlaubt)
+            // [F], [I], [N] Platzhalter
             if (is_array($value) && count($value) === 1) {
                 if (isset($value['[F]'])) {
                     $this->_query .= " {$comp} " . implode(', ', array_map([$this, '_secureValidateFunc'], $value['[F]']));
@@ -3985,7 +4198,6 @@ final class PDOdb
                         '_buildCondition'
                     );
                 }
-
                 $placeholders = rtrim(str_repeat('?, ', count($value)), ', ');
                 $this->_query .= " {$comp} ({$placeholders})";
                 $this->_bindParams($value);
@@ -4173,9 +4385,9 @@ final class PDOdb
      * @return int|bool Insert ID (int) on success with auto-increment, true if no ID, false on error.
      * @throws \Exception|\Throwable If called within subquery context or preparation fails.
      */
+
     protected function _buildInsert(string $tableName, array $insertData, string $operation): int|bool
     {
-
         if ($this->isSubQuery) {
             return false;
         }
@@ -4205,7 +4417,11 @@ final class PDOdb
 
             // Subquery-Objekt
             if (is_object($val) && method_exists($val, 'getSubQuery')) {
-                $placeholders[] = (string) $val;
+                $sub = $val->getSubQuery();
+                $placeholders[] = '(' . $sub['query'] . ')';
+                foreach ($sub['params'] as $p) {
+                    $this->_bindParams[] = $p;
+                }
                 continue;
             }
 
@@ -4214,9 +4430,9 @@ final class PDOdb
             $this->_bindParams[] = $val;
         }
 
-        $columnsStr     = implode(', ', $columns);
+        $columnsStr      = implode(', ', $columns);
         $placeholdersStr = implode(', ', $placeholders);
-        $options        = !empty($this->_queryOptions) ? implode(' ', $this->_queryOptions) . ' ' : '';
+        $options         = !empty($this->_queryOptions) ? implode(' ', $this->_queryOptions) . ' ' : '';
 
         $this->_query = sprintf('%s %sINTO %s (%s) VALUES (%s)', $operation, $options, $table, $columnsStr, $placeholdersStr);
 
@@ -4225,7 +4441,7 @@ final class PDOdb
         }
 
         try {
-            $pdo = $this->connect($this->defConnectionName);
+            $pdo  = $this->connect($this->defConnectionName);
             $stmt = $pdo->prepare($this->_query);
 
             foreach ($this->_bindParams as $idx => $value) {
@@ -4239,7 +4455,7 @@ final class PDOdb
             $this->logQuery($this->_query, $this->_bindParams);
             $stmt->execute();
 
-            $this->_count = $stmt->rowCount();
+            $this->_count    = $stmt->rowCount();
             $this->_stmtError = null;
             $this->_stmtErrno = null;
 
@@ -4666,6 +4882,29 @@ final class PDOdb
                 '_buildQuery'
             );
         }
+    }
+
+    /**
+     * Builds the value string for LIKE-based WHERE conditions.
+     *
+     * Applies wildcard characters based on the given mode:
+     * - 'both'  → %value%  (default)
+     * - 'left'  → %value
+     * - 'right' → value%
+     * - 'none'  → value    (no wildcards, provide them yourself)
+     *
+     * @param string $value The raw search value.
+     * @param string $mode  Wildcard mode: 'both', 'left', 'right', or 'none'.
+     * @return string       The value with wildcards applied.
+     */
+    protected function _buildLikeValue(string $value, string $mode): string
+    {
+        return match($mode) {
+            'left'  => '%' . $value,
+            'right' => $value . '%',
+            'none'  => $value,
+            default => '%' . $value . '%',
+        };
     }
 
     /**
@@ -5197,6 +5436,7 @@ final class PDOdb
         $allowed = [
             '=', '!=', '<>', '<', '<=', '>', '>=',
             'LIKE', 'NOT LIKE',
+            'SOUNDS LIKE',
             'IN', 'NOT IN',
             'BETWEEN', 'NOT BETWEEN',
             'IS', 'IS NOT'
@@ -5535,6 +5775,11 @@ final class PDOdb
         }
 
         foreach ($stack as $i => $item) {
+            // Group-Marker unverändert lassen
+            if (is_array($item) && (isset($item['__group_open']) || isset($item['__group_close']))) {
+                continue;
+            }
+
             if (is_array($item) && isset($item[1]) && $item[1] === '[RAW]') {
                 continue;
             }

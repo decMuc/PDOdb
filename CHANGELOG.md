@@ -6,6 +6,36 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
+## [1.4.0] – 2026-05-14
+
+### Added
+- `whereLike()` / `orWhereLike()` / `whereNotLike()` / `orWhereNotLike()`:
+    - Adds LIKE-based WHERE conditions with configurable wildcard mode.
+    - Mode options: `'both'` (default, `%value%`), `'left'` (`%value`), `'right'` (`value%`), `'none'` (no wildcards).
+    - Example: `$db->whereLike('name', 'alice')` → `WHERE name LIKE '%alice%'`
+
+- `whereSoundsLike()` / `orWhereSoundsLike()`:
+    - Adds phonetic WHERE conditions using MySQL's `SOUNDS LIKE` operator (Soundex algorithm).
+    - Useful for fuzzy name searches where spelling may vary.
+
+- `openWhereGroup()` / `closeWhereGroup()` / `whereGroup()`:
+    - Allows grouping WHERE conditions with parentheses for complex AND/OR logic.
+    - `openWhereGroup()` and `closeWhereGroup()` provide manual control.
+    - `whereGroup()` accepts a callback and closes the group automatically, preventing unclosed parentheses.
+    - Supports unlimited nesting depth.
+    - Inspired by and based on the work of [@xJuvi](https://github.com/xJuvi) (see [PR #14](https://github.com/decMuc/PDOdb/pull/14)).
+
+- Named placeholders in `rawQuery()`, `rawQueryOne()` and `rawQueryValue()`:
+    - Both `:name` and `name` (without colon) are now accepted as named placeholder keys.
+    - Example: `$db->rawQuery("SELECT * FROM users WHERE role = :role", ['role' => 'admin'])`
+
+### Fixed
+- `join()`: Table prefix was not automatically applied to joined tables.
+- `_buildInsert()`: Bind parameters from subquery objects were silently lost, causing SQL syntax errors.
+- `rawAddPrefix()`: System databases (`information_schema`, `performance_schema`, `mysql`, `sys`) are no longer incorrectly prefixed.
+- `copy()`: Replaced `serialize()`/`unserialize()` with `clone` to prevent fatal errors when an active PDO connection is present.
+- `_secureSanitizeWhere()`: WHERE group markers (`__group_open` / `__group_close`) are now correctly skipped during sanitization.
+
 ## [1.3.9] – 2025-11-21
 ### Fixed
 - Resolved PHP 8.4 deprecation warnings for implicitly nullable parameters:
