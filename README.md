@@ -1,23 +1,25 @@
-# PDOdb – A Secure, Powerful MySQL Engine for PDO (PHP 8+)
+# PDOdb – A Secure MySQL Query Builder for PHP 8+
 
-PDOdb is a modern database wrapper and SQL builder for PHP 8+, built on top of PDO.  
-It offers full support for secure query building, prepared statements, dynamic joins, subqueries, transactions, and strict validation.
+PDOdb is a modern database wrapper built on top of PDO. It gives you a clean, expressive API for building queries without writing raw SQL by hand – while staying safe, strict and fast by default.
 
-🔒 Safe by default.  
-⚙️ Fast, clean, extendable.  
-📘 Documentation:  
-👉 https://DocsPDOdb.decmuc.dev/
+Inspired by [ThingEngineer/MySQLiDb](https://github.com/ThingEngineer/MysqliDb), but rewritten from scratch for PDO with full type-safe WHERE methods, strict injection protection and a fluent or step-by-step API – your choice.
+
+📘 **Documentation:** https://DocsPDOdb.decmuc.dev
 
 ---
 
-## Features
+## Why PDOdb?
 
-- Intuitive query builder (`get()`, `insert()`, `update()`, `delete()`)
-- Smart `where*()` methods with type validation
-- Nested queries, joins, subqueries, aliases
-- Safe ORDER/GROUP clause parsing with heuristics
-- Locking, transactions, pagination, bulk insert
-- Inspired by [ThingEngineer/MySQLiDB](https://github.com/ThingEngineer/MysqliDb), but built for PDO with a similar API and strict SQL injection protection.
+Because writing `$pdo->prepare("SELECT...")` for the hundredth time is boring – and forgetting to bind a parameter is how things go wrong.
+
+PDOdb handles the boring parts. You write what you mean:
+
+```php
+$user = $db->whereInt('id', 42)->getOne('users');
+// → SELECT * FROM users WHERE id = 42 LIMIT 1
+```
+
+No manual prepare, no manual bind, no white screen on error. Exceptions all the way.
 
 ---
 
@@ -27,39 +29,155 @@ It offers full support for secure query building, prepared statements, dynamic j
 composer require decmuc/pdodb
 ```
 
+Or [download manually](https://github.com/decMuc/PDOdb/releases/latest) – PDOdb is a single file.
+
 ---
 
-## Quick Example
-Two lines for 90% of queries. 
-MySQL-first, prepared by default—no manual prepare() or binding.
+## Quick Start
 
 ```php
-$db->whereInt('id', 42);
-$user = $db->getOne('users');
+require 'vendor/autoload.php';
+use decMuc\PDOdb\PDOdb;
 
-// Booleans made easy
-$db->whereBool('status', true);
-$users = $db->get('users');
-// In short:
-$users = $db->whereBool('status', true)->get('users');
-// whereBool('status', 1) + get('users') is equivalent to
-// SELECT * FROM users WHERE status = 1.
-// false → 0 (or FALSE)
-$users = $db->whereBool('status', false)->get('users');
-// SELECT * FROM `users` WHERE `status` = 0
-
-// Chaining with other conditions
-$users = $db->whereBool('is_active', true)
-   ->where('role', 'admin')
-   ->orderBy('created_at', 'DESC')
-   ->get('users');
-
+$db = new PDOdb([
+    'host'     => 'localhost',
+    'username' => 'root',
+    'password' => 'secret',
+    'db'       => 'my_database',
+    'charset'  => 'utf8mb4',
+]);
 ```
-For comprehensive documentation and more examples, visit the PDOdb docs: https://DocsPDOdb.decmuc.dev
+
+Both styles work – use whichever fits your code:
+
+```php
+// Step by step – easy to read and extend
+$db->whereInt('active', 1);
+$db->whereString('role', 'admin');
+$db->orderBy('created_at', 'DESC');
+$users = $db->get('users');
+
+// Fluent – compact for experienced devs
+$users = $db->whereInt('active', 1)
+            ->whereString('role', 'admin')
+            ->orderBy('created_at', 'DESC')
+            ->get('users');
+
+// → SELECT * FROM users WHERE active = 1 AND role = 'admin' ORDER BY created_at DESC
+```
 
 ---
 
-## 📝 License / Lizenz
+## Features
 
+- ✅ **Type-safe WHERE methods** – `whereInt()`, `whereFloat()`, `whereString()`, `whereBool()`, `whereDate()`, `whereLike()`, `whereSoundsLike()` and more
+- ✅ **Prepared statements** – all values are bound automatically, never interpolated
+- ✅ **Heuristic injection check** – blocks obvious attack patterns like `1 OR 1=1` before they even reach the DB
+- ✅ **Fluent or step-by-step API** – both work, both produce the same SQL
+- ✅ **WHERE grouping** – `whereGroup()` for parenthesized conditions
+- ✅ **Joins & subqueries** – with prefix support and aliasing
+- ✅ **Transactions** – `startTransaction()`, `commit()`, `rollback()`
+- ✅ **Bulk insert & pagination** – `insertBulk()`, `paginate()`
+- ✅ **Table prefix** – set once, applied everywhere automatically
+- ✅ **Multiple instances** – connect to several databases side by side
+- ✅ **Named placeholders** in `rawQuery()` – both `:name` and `name` style
+- ✅ **Debug & trace** – `setTrace(true)`, `getLastDebugQuery()`, debug levels 0–3
 
-This project is licensed under the MIT License. See [LICENSE](LICENSE) for details
+---
+
+## A Few More Examples
+
+```php
+// Boolean flags – the clean way
+$db->whereBool('is_active', true)->get('users');
+// → SELECT * FROM users WHERE is_active = 1
+
+// Date range
+$db->whereDateBetween('created_at', '2025-01-01', '2025-12-31')->get('orders');
+// → SELECT * FROM orders WHERE created_at BETWEEN '2025-01-01' AND '2025-12-31'
+
+// LIKE with wildcard modes
+$db->whereLike('name', 'john', 'both')->get('users');
+// → SELECT * FROM users WHERE name LIKE '%john%'
+
+// WHERE groups with parentheses
+$db->whereInt('active', 1)
+   ->whereGroup(function($q) {
+       $q->whereString('role', 'admin')
+         ->orWhereString('role', 'editor');
+   })
+   ->get('users');
+// → SELECT * FROM users WHERE active = 1 AND (role = 'admin' OR role = 'editor')
+
+// Raw query with named placeholders
+$db->rawQuery("SELECT * FROM users WHERE id = :id AND role = :role", [
+    'id'   => 42,
+    'role' => 'admin',
+]);
+
+// Insert & get ID
+$id = $db->insert('users', [
+    'name'  => 'Alice',
+    'email' => 'alice@example.com',
+    'active' => 1,
+]);
+
+// Transactions
+$db->startTransaction();
+try {
+    $db->insert('orders', ['user_id' => 1, 'total' => 49.99]);
+    $db->update('users', ['last_order' => date('Y-m-d')], $db->whereInt('id', 1));
+    $db->commit();
+} catch (\Throwable $e) {
+    $db->rollback();
+}
+```
+
+---
+
+## Error Handling
+
+PDOdb throws real exceptions – no more white screens, no more silent failures.
+
+```php
+try {
+    $db->whereInt('id', 'not-a-number');
+    $user = $db->getOne('users');
+} catch (\InvalidArgumentException $e) {
+    echo $e->getMessage();
+    // → Invalid integer value for column 'id'.
+}
+```
+
+---
+
+## Roadmap
+
+**v1.4.0** *(current)*
+- `whereLike()` / `whereNotLike()` with wildcard modes (`both`, `left`, `right`, `none`)
+- `whereSoundsLike()` using MySQL `SOUNDS LIKE`
+- `whereGroup()` / `openWhereGroup()` / `closeWhereGroup()` for parenthesized conditions
+- Named placeholders in `rawQuery()`
+- Several bug fixes (JOIN prefix, subquery bind params, `copy()` with PDO)
+
+**v2.0.0** *(planned)*
+- Multi-driver support: **PostgreSQL**, **SQLite** (and later MSSQL)
+- Same API, different dialects internally – your code stays the same
+- Compatibility table per method in the docs (✅ MySQL ✅ PostgreSQL ⚠️ SQLite)
+
+---
+
+## Documentation
+
+Full documentation with examples for every method:
+👉 **https://DocsPDOdb.decmuc.dev**
+
+---
+
+## License
+
+MIT – see [LICENSE](LICENSE) for details.
+
+---
+
+*Built with ❤️ by [L. Fischer (decMuc)](https://github.com/decMuc)*
